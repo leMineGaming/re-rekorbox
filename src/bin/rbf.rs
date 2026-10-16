@@ -21,7 +21,11 @@ fn main() -> ExitCode {
         ["check", d] => check(Path::new(d)),
         ["xml", f] => show_xml(Path::new(f)),
         ["xml-rewrite", i, o] => rewrite_xml(Path::new(i), Path::new(o)),
-        _ => Err("usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out>".into()),
+        ["midi", p] => check_midi(Path::new(p)),
+        _ => Err(
+            "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir>"
+                .into(),
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -182,6 +186,76 @@ fn show_xml(path: &Path) -> R {
         report.skipped_marks, report.skipped_tempos
     );
     Ok(())
+}
+
+/// Parse MIDI mapping CSV files, compute bindings, verify write/parse round trips.
+fn check_midi(path: &Path) -> R {
+    use rekordbox_formats::midi;
+    let files: Vec<PathBuf> = if path.is_dir() {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(path)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.to_string_lossy().ends_with(".midi.csv"))
+            .collect();
+        v.sort();
+        v
+    } else {
+        vec![path.to_path_buf()]
+    };
+    let mut stats: BTreeMap<String, usize> = BTreeMap::new();
+    let mut failures = Vec::new();
+    for p in &files {
+        let text = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let m = midi::parse(&text);
+        *stats.entry("files".into()).or_default() += 1;
+        if !m.is_valid() {
+            failures.push(format!("{}: not valid (version {})", p.display(), m.version));
+        }
+        *stats.entry("files with BOM".into()).or_default() += m.report.had_bom as usize;
+        *stats.entry("entries".into()).or_default() += m.entries.len();
+        *stats.entry("skipped comment lines".into()).or_default() += m.report.comment_lines;
+        *stats.entry("skipped short rows".into()).or_default() += m.report.short_rows;
+        *stats.entry("skipped empty name".into()).or_default() += m.report.empty_name;
+        *stats.entry("skipped special (@) rows".into()).or_default() += m.report.special_rows;
+        for e in &m.entries {
+            let code = e.control_code(&m.device);
+            if code == 0 && e.type_text != "Button" {
+                *stats.entry(format!("type {:?} -> Button (unknown text)", e.type_text)).or_default() += 1;
+            }
+            *stats.entry("input bindings".into()).or_default() += e.input_bindings(&m.device).len();
+            *stats.entry("output bindings".into()).or_default() += e.output_bindings().len();
+        }
+        match midi::write(&m) {
+            Ok(t) => {
+                let back = midi::parse(&t);
+                let same = back.entries.len() == m.entries.len()
+                    && back.entries.iter().zip(&m.entries).all(|(a, b)| {
+                        let (mut a, mut b) = (a.clone(), b.clone());
+                        a.line = 0;
+                        b.line = 0;
+                        a == b
+                    });
+                if same {
+                    *stats.entry("write/parse round trip ok".into()).or_default() += 1;
+                } else {
+                    failures.push(format!("{}: round trip differs", p.display()));
+                }
+            }
+            Err(e) => failures.push(format!("{}: {e}", p.display())),
+        }
+    }
+    for (k, v) in &stats {
+        println!("{k:<40} {v}");
+    }
+    println!("failures                                 {}", failures.len());
+    for f in failures.iter().take(20) {
+        println!("  {f}");
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} failures", failures.len()))
+    }
 }
 
 fn rewrite_xml(input: &Path, output: &Path) -> R {

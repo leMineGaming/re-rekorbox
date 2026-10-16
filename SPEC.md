@@ -436,6 +436,65 @@ mit Flag = 0.
   Ohne Kinder `/>`, sonst `>`, jedes Kind-Element auf neuer Zeile mit Einrückung + 2, danach Zeilenende + Einrückung +
   `</Name>`.
 
+## 5f. MIDI-Mapping-CSV (`MidiMappings/*.midi.csv`)
+
+Belege: 69 mitgelieferte Dateien [OBS] und der Loader im Dekompilat/der Assembly [GH:0x1424c4a50 Datei,
+0x1424c3890 Zeile, 0x1424c35c0 Optionen, 0x1424c3c80 Interpretation, 0x1424c27c0 Typen].
+
+### Datei [GH:0x1424c4a50]
+- Zeilenweise; **leere Zeilen und Zeilen, die mit `#` beginnen, werden übersprungen** (z. B. die Spaltenzeile
+  `#name,function,type,input,deck1,…` und deaktivierte Einträge wie `#JogScratch,…`).
+- `@file,<version>,<gerät>`: an `,` zerlegt; `version` = Ganzzahl (Feld 1), `gerät` = Text (Feld 2).
+- Datenzeilen werden nur verarbeitet, solange `version == 1`; die Datei gilt als gültig, wenn `version == 1`.
+- [OBS] 6 der 69 Dateien beginnen mit einem UTF-8-BOM vor `@file`. Ob der Loader das BOM entfernt, ist offen (U24).
+
+### Zeile [GH:0x1424c3890]
+- Zerlegung an `,` **ohne Anführungszeichen-Behandlung**; mindestens **15 Felder**, sonst verworfen; Feld 0 darf nicht
+  leer sein. Weitere Felder werden ignoriert.
+- Spalten nach Position: `Name, Function, Type, Input, InputDeck1–4, Output, OutputDeck1–4, Option, Comment`
+  (`Name` = rekordbox-Funktion, `Function` = Bedienelement am Controller).
+- Zeilen, deren `Name` ein `@` enthält, verarbeitet diese Funktion nicht (Sonderzeilen) [GH:0x1424c3c80].
+
+### Optionen [GH:0x1424c35c0]
+`Option` an `;` zerlegen; je Teil: Schlüssel = Text vor dem ersten `=`, Wert = Text danach (fehlt er: `"1"`).
+Bekannte Schlüssel: `RO`, `Fast`, `Blink`, `Value`, `Min`, `Max`, `Priority`, `Dual`. Verwendet als: `RO`, `Fast`,
+`Dual` = Ganzzahl ≠ 0; `Blink`, `Priority` = Ganzzahl (fehlend 0); `Value`, `Min`, `Max` = Ganzzahl oder −1, wenn fehlend.
+[OBS] 35 Kombinationen, z. B. `Fast`, `RO;Priority=100`, `Fast;Dual`, `Blink=600`, `RO;Min=1;Max=72;Priority=100`.
+
+### Zahlen
+- Hex (`Input`, `Output`, Deck-Spalten bei leerem Input/Output) [GH:0x140ef6f00]: alle Hex-Ziffern werden der Reihe
+  nach angehängt (`v = v·16 + d`), **alle anderen Zeichen übersprungen**; Ergebnis als 16 Bit verwendet.
+- Dezimal (Deck-Kanäle, Optionswerte) [GH:0x1429b15cc]: `strtol` Basis 10 (führende Leerzeichen, Vorzeichen,
+  Abbruch beim ersten Nicht-Ziffer-Zeichen; leer → 0).
+
+### Nachrichten je Deck [GH:0x1424c3c80]
+- `Input` = Hex-Wert (Statusbyte·256 + Datenbyte, z. B. `B000` = Control Change Kanal 0, Controller 0; `9646` = Note On).
+- **`Input` = 0 (leer):** jede nicht-leere `InputDeckN` ist eine vollständige Hex-Nachricht für Deck N.
+- **`Input` ≠ 0:** jede nicht-leere `InputDeckN` ist eine Dezimalzahl k (Kanal): Nachricht = `(k << 8) | Input`;
+  Ausnahme Typ `JogTimestamp` (0x19): `k | Input`.
+- Ist keine Deck-Spalte belegt, aber `Input` ≠ 0: eine Zuordnung für Deck 0 (global) mit `Input`.
+- `Output`/`OutputDeckN`: dieselbe Regel (ohne JogTimestamp-Ausnahme); der Fallback „Deck 0“ ist für Output nicht
+  im Detail geprüft (Inferenz).
+- **`Dual`:** jedes Deck erhält zusätzlich die Nachricht seines Partnerdecks (1↔3, 2↔4); ohne `Dual` ist die zweite
+  Nachricht gleich der ersten.
+
+### Typen [GH:0x1424c27c0] (Text → interner Code)
+`Button` 0, `Slider` 4, `Knob` 5, `KnobSlider` 6, `KnobSliderHiRes` 7 (8 bei Gerät `PIONEER DDJ-SX2` oder
+`PIONEER DDJ-SX2 2IN2OUT`), `Difference` 0x0C, `Rotary` 0x0D, `RotaryAsKnob` 0x0E, `Value` 0x0F, `RawValue` 0x10,
+`Indicator` 0x11, `IndicatorHiRes` 0x12, `JogIndicator` 0x13, `JogIndicatorHiRes` 0x14, `JogRotate` 0x17,
+`JogRotateAbsPos` 0x18, `JogTimestamp` 0x19, `JogTouch` 0x1A, `Toggle` 0x1B, `Parameter` 0x1C,
+`DdjRzPad` 0x1D, `DdjRxPad` 0x1E, `DdjSzPad` 0x1F, `DdjSx2Pad` 0x20, `DdjSxPad` 0x21; **unbekannter Text → 0 (Button)**.
+`Pad` wird nach Gerät aufgelöst (Vergleich mit dem `@file`-Gerätenamen):
+- `DdjRzPad`: DDJ-RZ, DDJ-RZX
+- `DdjRxPad`: DDJ-RX, DDJ_RX 2IN2OUT, DDJ-RR, XDJ-XZ (1), XDJ-AZ, Pioneer DJ XDJ-RX2, XDJ-RX3, OPUS-QUAD, DDJ-XP1,
+  DDJ-XP2, DDJ-1000, DDJ-800, DDJ-FLX10, DDJ-REV5, DDJ-REV7, DJM-S11, DJM-S7, PLX-CRSS12
+- `DdjSzPad`: DDJ-SZ · `DdjSx2Pad`: PIONEER DDJ-SX2, PIONEER DDJ-SX2 2IN2OUT, Pioneer DJ DJM-S9
+- alle anderen Geräte: `DdjSxPad`
+
+[OBS] Verwendete Typen in den 69 Dateien: Pad 5868, Button 5190, KnobSliderHiRes 899, Indicator 381, Rotary 270,
+KnobSlider 232, Value 215, JogRotate 154, Parameter 140, JogTouch 78, Difference 39, JogIndicator 25, Slider 6,
+IndicatorHiRes 5, RotaryAsKnob 4, leer 4, JogIndicatorHiRes 3, RawValue 3, JogRotateAbsPos 1, JogTimestamp 1.
+
 ## 6. Bewusst ausgeschlossen (Begründung)
 
 - **Lizenzierung / Kopierschutz** (`lsapiw64.dll`, `clatc.dll`, Aktivierung, Abo-Prüfung): wird weder analysiert noch nachgebaut oder umgangen.
@@ -464,6 +523,8 @@ mit Flag = 0.
 | U21 | ~~Location-Umwandlung~~ → **geklärt** (5e: Reader `\`→`/`, Writer unverändert) | – |
 | U22 | ~~Escaping~~ → **geklärt** (5e: Attribute ohne Zeichen < 0x20; Ausgabeformat CRLF, Umbruch 60) | – |
 | U23 | `export.pdb` (DeviceSQL) – noch nicht analysiert; kein Exportmedium vorhanden | USB-Export als Testdaten + Dekompilat |
+| U24 | MIDI-CSV: Behandlung eines UTF-8-BOM vor `@file` (6 Dateien betroffen) | Zeilenleser GH:0x142a838b0 |
+| U25 | MIDI-CSV: Bedeutung der Typ-Codes 1–3, 9–11, 0x15, 0x16 (kein Text bekannt) und Semantik von `Fast`/`RO`/`Priority` | Nutzer der Mapping-Struktur |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |
@@ -478,6 +539,8 @@ mit Flag = 0.
   byte-identisch zurückgeschrieben; alle typisierten Tags identisch neu kodiert; 23 431/23 431 Phrasen mit Label;
   1823/1823 `.3EX` dekodiert.
 - Nebenbefund: PVB2 `u64@10` = 5 600 864 bei einem ~127 s langen Track (44,1 kHz) → stützt die Inferenz „Anzahl Samples“.
+- Modul `midi` (§5f), validiert mit `rbf midi` gegen die 69 mitgelieferten Mappings [OBS]: alle `version 1`,
+  13 505 Einträge, 0 Fehler, 69/69 Write/Parse-Round-Trips identisch; 4 Einträge mit leerem `Type` (→ Button).
 
 ## 8. Werkzeug-Status (Grenzen dieser Analyse)
 

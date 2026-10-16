@@ -1,0 +1,12 @@
+﻿entries                                  13505
+files                                    69
+files with BOM                           6
+input bindings                           37280
+output bindings                          30979
+skipped comment lines                    1992
+skipped empty name                       1646
+skipped short rows                       0
+skipped special (@) rows                 0
+type "" -> Button (unknown text)         4
+write/parse round trip ok                69
+failures                                 0
