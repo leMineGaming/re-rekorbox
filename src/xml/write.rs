@@ -1,34 +1,88 @@
-//! `rekordbox.xml` writer (SPEC §5e "Dokumentaufbau", "TRACK-Attribute", "TEMPO", "POSITION_MARK").
+//! `rekordbox.xml` writer (SPEC §5e "Dokumentaufbau", "TRACK-Attribute", "TEMPO", "POSITION_MARK",
+//! "Ausgabeformat").
 //!
-//! Attribute order and number formats follow the original writer. Indentation (two spaces per
-//! level, one element per line) is a design choice – the original layout was not determined.
+//! The document is built as a small element tree and serialised like the original writer:
+//! header line, blank line, root element with two-space indentation per level, `\r\n` line
+//! endings, and attribute wrapping once the attributes on the current line exceed 60 bytes.
 
 use super::{encode_location, escape_attr, Document, Node, PositionMark, Tempo, Track, TRACK_COLOURS};
-use std::fmt::Write as _;
 
-struct Out {
-    s: String,
+/// Line ending used by the original writer (default of its output stream, §5e).
+pub const NEWLINE: &str = "\r\n";
+/// Attribute line wrap length passed by the original writer (§5e).
+pub const LINE_WRAP: usize = 60;
+
+/// A generic XML element.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Element {
+    pub name: String,
+    pub attrs: Vec<(String, String)>,
+    pub children: Vec<Element>,
 }
 
-impl Out {
-    fn open(&mut self, depth: usize, name: &str, attrs: &[(&str, String)], empty: bool) {
-        for _ in 0..depth {
-            self.s.push_str("  ");
-        }
-        self.s.push('<');
-        self.s.push_str(name);
-        for (k, v) in attrs {
-            let _ = write!(self.s, " {k}=\"{}\"", escape_attr(v));
-        }
-        self.s.push_str(if empty { "/>\n" } else { ">\n" });
+impl Element {
+    pub fn new(name: &str) -> Self {
+        Element { name: name.to_string(), attrs: Vec::new(), children: Vec::new() }
     }
 
-    fn close(&mut self, depth: usize, name: &str) {
-        for _ in 0..depth {
-            self.s.push_str("  ");
-        }
-        let _ = writeln!(self.s, "</{name}>");
+    pub fn attr(mut self, k: &str, v: impl Into<String>) -> Self {
+        self.attrs.push((k.to_string(), v.into()));
+        self
     }
+
+    pub fn attrs(mut self, list: Vec<(&str, String)>) -> Self {
+        self.attrs.extend(list.into_iter().map(|(k, v)| (k.to_string(), v)));
+        self
+    }
+
+    pub fn child(mut self, c: Element) -> Self {
+        self.children.push(c);
+        self
+    }
+
+    /// Serialise with the original algorithm: `indent` spaces, `<name`, attributes (each as
+    /// ` name="value"`; a line break plus `indent + 1 + len(name)` spaces is inserted before an
+    /// attribute when the attributes already written on the line exceed `wrap` bytes), then `/>`
+    /// or `>` + children (each on a new line, indent + 2) + newline + indent + `</name>`.
+    pub fn write(&self, out: &mut String, indent: usize, wrap: usize) {
+        push_spaces(out, indent);
+        out.push('<');
+        out.push_str(&self.name);
+        let align = indent + 1 + self.name.len();
+        let mut line_len = 0usize;
+        for (k, v) in &self.attrs {
+            if line_len > wrap {
+                out.push_str(NEWLINE);
+                push_spaces(out, align);
+                line_len = 0;
+            }
+            let start = out.len();
+            out.push(' ');
+            out.push_str(k);
+            out.push_str("=\"");
+            out.push_str(&escape_attr(v));
+            out.push('"');
+            line_len += out.len() - start;
+        }
+        if self.children.is_empty() {
+            out.push_str("/>");
+            return;
+        }
+        out.push('>');
+        for c in &self.children {
+            out.push_str(NEWLINE);
+            c.write(out, indent + 2, wrap);
+        }
+        out.push_str(NEWLINE);
+        push_spaces(out, indent);
+        out.push_str("</");
+        out.push_str(&self.name);
+        out.push('>');
+    }
+}
+
+fn push_spaces(out: &mut String, n: usize) {
+    out.extend(std::iter::repeat(' ').take(n));
 }
 
 /// `%.02f` of `value × 0.01` (AverageBpm, Bpm).
@@ -41,39 +95,34 @@ fn seconds(ms: u32) -> String {
     format!("{:.3}", ms as f64 * 0.001)
 }
 
-/// Serialise a document.
+/// Build the element tree of a document.
+pub fn to_element(doc: &Document) -> Element {
+    let product = Element::new("PRODUCT")
+        .attr("Name", doc.product.name.clone())
+        .attr("Version", doc.product.version.clone())
+        .attr("Company", doc.product.company.clone());
+    let mut collection = Element::new("COLLECTION").attr("Entries", doc.tracks.len().to_string());
+    collection.children = doc.tracks.iter().map(track_element).collect();
+    let mut root = Element::new("NODE")
+        .attr("Type", "0")
+        .attr("Name", "ROOT")
+        .attr("Count", doc.playlists.len().to_string());
+    root.children = doc.playlists.iter().map(node_element).collect();
+    Element::new("DJ_PLAYLISTS")
+        .attr("Version", doc.version.clone())
+        .child(product)
+        .child(collection)
+        .child(Element::new("PLAYLISTS").child(root))
+}
+
+/// Serialise a document exactly like the original writer (header, blank line, CRLF).
 pub fn to_string(doc: &Document) -> String {
-    let mut o = Out { s: String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\n") };
-    o.open(0, "DJ_PLAYLISTS", &[("Version", doc.version.clone())], false);
-    o.open(
-        1,
-        "PRODUCT",
-        &[
-            ("Name", doc.product.name.clone()),
-            ("Version", doc.product.version.clone()),
-            ("Company", doc.product.company.clone()),
-        ],
-        true,
-    );
-    o.open(1, "COLLECTION", &[("Entries", doc.tracks.len().to_string())], doc.tracks.is_empty());
-    if !doc.tracks.is_empty() {
-        for t in &doc.tracks {
-            write_track(&mut o, t);
-        }
-        o.close(1, "COLLECTION");
-    }
-    o.open(1, "PLAYLISTS", &[], false);
-    let root = [("Type", "0".to_string()), ("Name", "ROOT".to_string()), ("Count", doc.playlists.len().to_string())];
-    o.open(2, "NODE", &root, doc.playlists.is_empty());
-    if !doc.playlists.is_empty() {
-        for n in &doc.playlists {
-            write_node(&mut o, 3, n);
-        }
-        o.close(2, "NODE");
-    }
-    o.close(1, "PLAYLISTS");
-    o.close(0, "DJ_PLAYLISTS");
-    o.s
+    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+    s.push_str(NEWLINE);
+    s.push_str(NEWLINE);
+    to_element(doc).write(&mut s, 0, LINE_WRAP);
+    s.push_str(NEWLINE);
+    s
 }
 
 /// Attributes of a `TRACK` element in writer order (§5e).
@@ -111,19 +160,15 @@ pub fn track_attributes(t: &Track) -> Vec<(&'static str, String)> {
     a
 }
 
-fn write_track(o: &mut Out, t: &Track) {
-    let empty = t.tempos.is_empty() && t.marks.is_empty();
-    o.open(2, "TRACK", &track_attributes(t), empty);
-    if empty {
-        return;
-    }
+fn track_element(t: &Track) -> Element {
+    let mut e = Element::new("TRACK").attrs(track_attributes(t));
     for tempo in &t.tempos {
-        o.open(3, "TEMPO", &tempo_attributes(tempo), true);
+        e.children.push(Element::new("TEMPO").attrs(tempo_attributes(tempo)));
     }
     for m in &t.marks {
-        o.open(3, "POSITION_MARK", &mark_attributes(m), true);
+        e.children.push(Element::new("POSITION_MARK").attrs(mark_attributes(m)));
     }
-    o.close(2, "TRACK");
+    e
 }
 
 /// `TEMPO` attributes: `Inizio`, `Bpm`, `Metro`, `Battito`.
@@ -153,32 +198,24 @@ pub fn mark_attributes(m: &PositionMark) -> Vec<(&'static str, String)> {
     a
 }
 
-fn write_node(o: &mut Out, depth: usize, n: &Node) {
+fn node_element(n: &Node) -> Element {
     match n {
         Node::Folder { name, children } => {
-            let attrs = [("Name", name.clone()), ("Type", "0".into()), ("Count", children.len().to_string())];
-            o.open(depth, "NODE", &attrs, children.is_empty());
-            if !children.is_empty() {
-                for c in children {
-                    write_node(o, depth + 1, c);
-                }
-                o.close(depth, "NODE");
-            }
+            let mut e = Element::new("NODE")
+                .attr("Name", name.clone())
+                .attr("Type", "0")
+                .attr("Count", children.len().to_string());
+            e.children = children.iter().map(node_element).collect();
+            e
         }
         Node::Playlist { name, key_type, keys } => {
-            let attrs = [
-                ("Name", name.clone()),
-                ("Type", "1".into()),
-                ("KeyType", key_type.to_string()),
-                ("Entries", keys.len().to_string()),
-            ];
-            o.open(depth, "NODE", &attrs, keys.is_empty());
-            if !keys.is_empty() {
-                for k in keys {
-                    o.open(depth + 1, "TRACK", &[("Key", k.clone())], true);
-                }
-                o.close(depth, "NODE");
-            }
+            let mut e = Element::new("NODE")
+                .attr("Name", name.clone())
+                .attr("Type", "1")
+                .attr("KeyType", key_type.to_string())
+                .attr("Entries", keys.len().to_string());
+            e.children = keys.iter().map(|k| Element::new("TRACK").attr("Key", k.clone())).collect();
+            e
         }
     }
 }

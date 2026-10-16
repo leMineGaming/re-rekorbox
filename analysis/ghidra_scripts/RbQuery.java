@@ -48,6 +48,7 @@ public class RbQuery extends GhidraScript {
                 case "rtti": for (int i = 2; i < a.length; i++) rtti(a[i]); break;
                 case "xrefrange": xrefrange(toAddr(a[2]), toAddr(a[3]), Integer.decode(a[4])); break;
                 case "strrange": strrange(toAddr(a[2]), toAddr(a[3])); break;
+                case "asm": asm(a[2]); break;
                 default: out.println("unknown command " + a[1]);
             }
         } finally {
@@ -281,6 +282,27 @@ public class RbQuery extends GhidraScript {
                 fns.add(f == null ? "?" : f.getEntryPoint().toString());
             }
             out.println("S " + d.getAddress() + " \"" + d.getValue() + "\" <- " + String.join(",", fns));
+        }
+    }
+
+    // Disassembly of the function containing the selector, with referenced strings/symbols.
+    private void asm(String sel) {
+        Function f = fn(sel);
+        if (f == null) { out.println("## no function for " + sel); return; }
+        out.println("## ASM " + f.getName() + " @ " + f.getEntryPoint());
+        InstructionIterator it = currentProgram.getListing().getInstructions(f.getBody(), true);
+        while (it.hasNext()) {
+            Instruction ins = it.next();
+            StringBuilder note = new StringBuilder();
+            for (Reference r : ins.getReferencesFrom()) {
+                Data d = getDataAt(r.getToAddress());
+                if (d != null && d.hasStringValue()) note.append(" \"").append(d.getValue()).append('"');
+                else {
+                    Function t = getFunctionAt(r.getToAddress());
+                    if (t != null) note.append(" ").append(t.getName());
+                }
+            }
+            out.println(ins.getAddress() + "  " + ins + (note.length() > 0 ? "   ;" + note : ""));
         }
     }
 

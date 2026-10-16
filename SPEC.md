@@ -334,7 +334,8 @@ Konstruktor 0x14126f190 stimmen mit den 1831 beobachteten `.DAT`-Dateien überei
 
 ## 5e. rekordbox.xml – Bibliotheks-Austauschformat (Dekompilat)
 
-Keine Beispieldatei auf dem System vorhanden → Spezifikation **nur aus Code** [GH], ohne Beobachtungs-Gegenprobe.
+Keine Beispieldatei auf dem System vorhanden → Spezifikation **nur aus Code** [GH] (Dekompilat und, wo der Decompiler
+unscharf war, Assembly), ohne Beobachtungs-Gegenprobe.
 Modul: Writer „Export Collection in xml format“ [GH:0x141eb6750], Reader „Loading XML library“ [GH:0x141eb11e0].
 XML-Bibliothek ist ein JUCE-artiger DOM (Elemente mit geordneten Attribut-Listen).
 
@@ -360,7 +361,7 @@ XML-Bibliothek ist ein JUCE-artiger DOM (Elemente mit geordneten Attribut-Listen
 | `Name`, `Artist`, `Composer`, `Album`, `Grouping`, `Genre` | Text |
 | `Kind` | Formatcode → Text: 1 `MP3 File`, 2 `AAC File`, 3 `MP4 File`, 4 `M4A File`, 5 `FLAC File`, 6 `ALAC File`, 11 `WAV File`, 12 `AIFF File`, sonst `Unknown Format` |
 | `Size` | Ganzzahl (Inferenz: Bytes) |
-| `TotalTime` | Ganzzahl (u16; Inferenz: Sekunden) |
+| `TotalTime` | Ganzzahl (u16), Sekunden (Reader-Vergleich, siehe unten) |
 | `DiscNumber`, `TrackNumber`, `Year` | Ganzzahl |
 | `AverageBpm` | `BPM×100 · 0.01`, Format `%.02f` (Konstante 0.01 @0x1457ff5d8) |
 | `DateAdded` | Text, unverändert aus der DB (Format unbekannt, U20) |
@@ -389,16 +390,51 @@ Danach folgen als Kind-Elemente TEMPO* und POSITION_MARK* (nur wenn Analysedaten
 - **Reader-Regeln:** `,` in Zahlen wird als `.` gelesen; Eintrag wird verworfen, wenn `Type ∉ {0,4}`, `Start` außerhalb
   `[0, TotalTime]`, bei Loop `End < Start` oder `End > TotalTime`, oder `Num ∉ [−1, 7]`. Umkehrabbildung `Num → Art`:
   −1 → 0 (Cue) bzw. −1 (Loop); 0–2 → Num+1; 3–7 → Num+2. Position zusätzlich in Wellenform-Frames: `ms · 150 / 1000`.
-  Farbe: nächster Eintrag (euklidischer RGB-Abstand) einer 64-Farben-Palette [GH:0x1420426d0].
+  Farbe: nur wenn `Red`, `Green`, `Blue` alle vorhanden sind (Default −1) und `Num` ∈ 0…7 → Palettenindex mit dem kleinsten
+  euklidischen RGB-Abstand unter den Indizes 1…64; bei Gleichstand gewinnt der erste Index.
+- **Hot-Cue-Palette** [Initialisierung GH:0x140c9c4d0, Zugriff GH:0x1420426d0; Werte aus der Assembly extrahiert,
+  `analysis/out/palette.txt`]: 64 RGB-Werte, Index 1 = `#305AFF` … 62 = `#6473FF`, 63 = `#000000`, 64 = `#FFFFFF`;
+  Indizes außerhalb 1…64 liefern Eintrag 0 = `#000000`. Vollständige Tabelle: `HOT_CUE_PALETTE` in `src/xml/mod.rs`.
 
-### Location-Kodierung [GH:0x141eb91b0]
-Pfad als UTF-8-Bytes; erhalten bleiben alphanumerische ASCII-Zeichen (GH:0x142a6f780) und `! # $ ( ) * + , - . / : ; = ? @ _ ~`;
-alle anderen Bytes → `%` + **zwei Kleinbuchstaben-Hexziffern**; Präfix `file://localhost/`.
-Ob Windows-`\` vorher in `/` umgewandelt wird, ist offen (U21).
+### TEMPO-Import (Beatgrid-Expansion) [GH:0x141eb1620]
+Der Reader erzeugt aus den TEMPO-Ankern ein vollständiges Beatgrid (Einträge wie `PQTZ`). Konstanten: 1000, 30, 1, 60, 0.5.
+1. Pro TEMPO: `Inizio` (s), `Bpm`, `Battito`, Zähler `num` = ganzzahliger Text von `Metro` vor dem `/` (ohne `/` → 0).
+2. **Auffüllen vor dem Anker:** Waren BPM, Beat und num des vorigen Ankers > 0 und liegt `Inizio` hinter dem letzten Beat,
+   werden Beats im Abstand `60/BPM` erzeugt (`beat = beat % num + 1`), bis der nächste Beat nach `TotalTime` läge oder der
+   Anker höchstens einen halben Beat (`30/BPM`) entfernt ist.
+3. **Anker selbst:** übernommen, wenn BPM, Battito, num > 0 und `letzter Beat < Inizio ≤ TotalTime`; der allererste Eintrag
+   darf auch bei `Inizio = 0` stehen. Die Zustandswerte (BPM, Beat, num) werden auch dann übernommen, wenn der Anker
+   verworfen wird (Eigenheit: ein Anker hinter `TotalTime` steuert trotzdem die Schlussauffüllung).
+4. **Schlussauffüllung** nach dem letzten Anker bis einschließlich `TotalTime`.
+5. Tempo = `(int)(BPM·100 + 0.5)`, Zeit = `(int)(s·1000 + 0.5)`.
 
-### XML-Escaping [GH:0x141eb9bf0]
-`&` → `&amp;`, `"` → `&quot;`, `'` → `&apos;`, `<`/`>` → Entities (Inferenz: `&lt;`/`&gt;`); Zeichen > 0x7F werden als UTF-8
-geschrieben. Behandlung von `\n`, `\r` und Steuerzeichen < 0x20 im Dekompilat unklar (U22).
+### Weitere Reader-Umrechnungen [GH:0x141eb26d0]
+- `AverageBpm` → `(int)(Wert · 100.0)` – **abgeschnitten**, nicht gerundet (Konstante 100.0 @0x1457ffc28).
+- `SampleRate` wird als Fließkommazahl gelesen (mit `,`-Toleranz) und abgeschnitten; `Rating` → `Wert / 51`.
+- `TotalTime` ist in **Sekunden**: Der Reader vergleicht Cue-Startzeiten in Sekunden direkt mit `TotalTime`.
+
+### Location-Kodierung [Writer GH:0x141eb91b0, Reader GH:0x141eb47b0]
+- **Writer:** Pfad als UTF-8-Bytes; erhalten bleiben alphanumerische ASCII-Zeichen (GH:0x142a6f780) und
+  `! # $ ( ) * + , - . / : ; = ? @ _ ~`; alle anderen Bytes → `%` + **zwei Kleinbuchstaben-Hexziffern**;
+  `file://localhost/` + Ergebnis. Der Pfad wird sonst nicht verändert (kein `/` entfernt oder ergänzt).
+- **Reader:** (1) `%xx` dekodieren (Hex in beiden Schreibweisen; ungültige Sequenzen bleiben stehen), (2) Präfix
+  `file://localhost/` entfernen [GH:0x142a69790], (3) **`\` → `/`** [GH:0x141e47970]. → rekordbox speichert Pfade intern
+  mit `/` (z. B. `C:/Music/a.mp3`).
+
+### XML-Escaping [GH:0x141eb9bf0, Assembly + Sprungtabelle @0x141eb9dd8]
+Zeichen werden als UTF-8 dekodiert und so behandelt: `"` → `&quot;`, `&` → `&amp;`, `'` → `&apos;`, `<` → `&lt;`,
+`>` → `&gt;`; `\n`/`\r`: bei gesetztem Flag **entfernt**, sonst unverändert; alle übrigen Zeichen < 0x20 **entfernt**;
+Zeichen ≥ 0x80 als UTF-8. **Attributwerte** werden mit Flag = 1 geschrieben [GH:0x141eb63d0 @0x141eb64c7], Textinhalt
+mit Flag = 0.
+
+### Ausgabeformat [GH:0x141eb6b20, Element-Writer GH:0x141eb63d0]
+- `<?xml version="1.0" encoding="UTF-8"?>` + 2 × Zeilenende; danach (falls gesetzt) DTD + Zeilenende; dann das
+  Wurzelelement mit Einrückung 0 und **Umbruchgrenze 60**; abschließend ein Zeilenende.
+- Zeilenende = **`\r\n`** (Standardwert des Ausgabestroms, Bytes `0d 0a` @0x14560c95c).
+- Element: Einrückung (Leerzeichen), `<Name`; für jedes Attribut: übersteigen die bereits in dieser Zeile geschriebenen
+  Attribut-Bytes 60, folgt Zeilenende + `Einrückung + 1 + Länge(Name)` Leerzeichen; dann ` Name="Wert"`.
+  Ohne Kinder `/>`, sonst `>`, jedes Kind-Element auf neuer Zeile mit Einrückung + 2, danach Zeilenende + Einrückung +
+  `</Name>`.
 
 ## 6. Bewusst ausgeschlossen (Begründung)
 
@@ -424,9 +460,9 @@ geschrieben. Behandlung von `\n`, `\r` und Steuerzeichen < 0x20 im Dekompilat un
 | U17 | PWVC-Werte (80…105) – Bedeutung | Nutzer im Wellenform-Renderer |
 | U18 | PVDI (2EX) – Format, Reader GH:0x141278280 | Dekompilat |
 | U19 | PQT2 `u32@2C`, `u32@30/34` und Bedeutung der 2-Byte-Einträge | Dekompilat der PQT2-Nutzer |
-| U20 | rekordbox.xml `DateAdded`-Format, Einheiten von `Size`/`TotalTime`/`BitRate` | eigener XML-Export als Testdatei |
-| U21 | rekordbox.xml `Location`: Umwandlung von `\` und Laufwerksbuchstaben | eigener XML-Export |
-| U22 | XML-Escaping von Zeilenumbrüchen/Steuerzeichen | eigener XML-Export |
+| U20 | rekordbox.xml: `TotalTime` = Sekunden geklärt (5e); offen: `DateAdded` = Text aus der DB (Inferenz: Spalte `StockDate`, GH:0x1420cb5a0), Datumsformat und Einheiten von `Size`/`BitRate` | eigener XML-Export als Testdatei |
+| U21 | ~~Location-Umwandlung~~ → **geklärt** (5e: Reader `\`→`/`, Writer unverändert) | – |
+| U22 | ~~Escaping~~ → **geklärt** (5e: Attribute ohne Zeichen < 0x20; Ausgabeformat CRLF, Umbruch 60) | – |
 | U23 | `export.pdb` (DeviceSQL) – noch nicht analysiert; kein Exportmedium vorhanden | USB-Export als Testdaten + Dekompilat |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |

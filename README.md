@@ -13,7 +13,7 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `anlz::waveform` | `PWAV`/`PWV2` (inkl. Längen-Toleranz), `PWV3`–`PWV7`, Bit-Layouts Mono/Farbe | §5b, §5d |
 | `anlz::phrase` | `PSSI` mit Header-Prüfungen, Mood, **Phrasen-Labels** (Player-Umrechnung), Fill-in | §5c, §5d |
 | `anlz::threex` | `.3EX` (MessagePack, `embedding`) dekodieren/kodieren | §5a |
-| `xml` | `rekordbox.xml`: Modell, Writer (Attributreihenfolge, Zahlenformate), Reader (Toleranz- und Validierungsregeln), Location-URL, Escaping, Beatgrid-Export-Modi 0/1/2, Cue-Nummern | §5e |
+| `xml` | `rekordbox.xml`: Modell, Writer (Attributreihenfolge, Zahlenformate, Original-Layout), Reader (Toleranz- und Validierungsregeln), Location-URL, Escaping, Beatgrid-Export-Modi 0/1/2 und Import-Expansion, Cue-Nummern, Hot-Cue-Palette | §5e |
 | `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite` | – |
 
 ## Bauen und testen
@@ -24,8 +24,8 @@ Voraussetzung: Rust (stable, getestet mit 1.99.1).
 cargo test
 ```
 
-32 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
-23 für ANLZ, 9 für rekordbox.xml. Erwartete Bytes und Regeln stammen jeweils aus der SPEC.
+37 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
+23 für ANLZ, 14 für rekordbox.xml. Erwartete Bytes und Regeln stammen jeweils aus der SPEC.
 
 ## CLI
 
@@ -46,16 +46,15 @@ zurückgeschrieben, alle typisierten Tags identisch neu kodiert, alle 23 431 Phr
 
 ## Grenzen
 
-- **rekordbox.xml** ist nur aus dem Dekompilat spezifiziert; es lag keine echte XML-Datei vor (SPEC U20–U22).
-  Bewusste Designentscheidungen, wo das Original nicht bestimmt wurde:
-  Einrückung (2 Leerzeichen), `\` → `/` und Entfernen eines führenden `/` in `Location`,
-  `\n`/`\r` als `&#10;`/`&#13;`, `PRODUCT Name="rekordbox"` als Vorgabe.
+- **rekordbox.xml** ist aus Dekompilat und Assembly spezifiziert, aber nicht gegen eine echte Exportdatei geprüft.
+  Aus dem Code übernommen: Ausgabeformat (CRLF, Einrückung 2, Attribut-Umbruch > 60 Bytes), Escaping
+  (Steuerzeichen inkl. Zeilenumbrüche in Attributen entfernt), Location-Regeln, Abschneiden von `AverageBpm`,
+  TEMPO-Import als Beatgrid-Expansion, 64-Farben-Hot-Cue-Palette.
+  Offen bzw. Designentscheidung: Datumsformat von `DateAdded` (SPEC U20), Vorgabe `PRODUCT Name="rekordbox"`.
 - **Unbekannte Feldbedeutungen** werden unverändert mitgeführt, aber nicht interpretiert:
   `PMAI`-Felder, `PCPT`-Felder außer Slot, `PQT2`-Nutzdaten, `PSSI u16[5..8]`, `PWV4`-Einträge, Farbsemantik
   von `PWV5 c0..c2` (SPEC §7).
 - `PVBR`, `PCO2`, `PWVC`, `PKEY`, `PVDI` werden roh durchgereicht.
-- Hot-Cue-Farben beim XML-Import: rekordbox ordnet RGB einer 64-Farben-Palette zu; diese Palette ist nicht
-  extrahiert, daher bleibt RGB unverändert.
 
 ## Bewusst nicht nachgebaut
 

@@ -84,7 +84,7 @@ fn ms(seconds: f64) -> u32 {
 }
 
 fn parse_track(a: &Attrs) -> Track {
-    let location = get(a, "Location").map(|l| decode_location(l).unwrap_or_else(|| l.to_string())).unwrap_or_default();
+    let location = get(a, "Location").map(decode_location).unwrap_or_default();
     let colour = get(a, "Colour")
         .and_then(|c| TRACK_COLOURS.iter().position(|k| k.eq_ignore_ascii_case(c.trim())))
         .map(|i| i as u8 + 1);
@@ -102,7 +102,8 @@ fn parse_track(a: &Attrs) -> Track {
         disc_number: uint(a, "DiscNumber") as u32,
         track_number: uint(a, "TrackNumber") as u32,
         year: uint(a, "Year") as u32,
-        bpm_x100: num(a, "AverageBpm").map(|b| (b * 100.0).round().max(0.0) as u32).unwrap_or(0),
+        // The original importer truncates: (int)(AverageBpm * 100.0) (§5e).
+        bpm_x100: num(a, "AverageBpm").map(|b| (b * 100.0).max(0.0) as u32).unwrap_or(0),
         date_added: text(a, "DateAdded"),
         bit_rate: uint(a, "BitRate") as u32,
         sample_rate: uint(a, "SampleRate") as u32,
@@ -120,10 +121,11 @@ fn parse_track(a: &Attrs) -> Track {
     }
 }
 
+/// `TEMPO` → [`Tempo`] with the importer's rounding: `(int)(bpm·100 + 0.5)`, `(int)(s·1000 + 0.5)`.
 fn parse_tempo(a: &Attrs) -> Option<Tempo> {
     Some(Tempo {
         inizio_ms: ms(num(a, "Inizio")?),
-        bpm_x100: (num(a, "Bpm")? * 100.0).round().max(0.0) as u32,
+        bpm_x100: (num(a, "Bpm")? * 100.0 + 0.5).max(0.0) as u32,
         metro: get(a, "Metro").unwrap_or("4/4").to_string(),
         battito: int(a, "Battito").unwrap_or(0).clamp(0, 255) as u8,
     })
