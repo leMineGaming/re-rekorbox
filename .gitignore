@@ -1,0 +1,7 @@
+/target
+# Ghidra project and raw analysis output are large and derived from the original binary
+/analysis/ghidra/
+/analysis/out/
+/analysis/*.snapshot
+/analysis/search_*.json
+/analysis/search_*.err

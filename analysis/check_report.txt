@@ -1,0 +1,24 @@
+﻿3EX decoded                      1823
+container round trip ok          5484
+files .2EX                       1826
+files .3EX                       1823
+files .DAT                       1831
+files .EXT                       1827
+phrase labelled                  23431
+tag PCO2 raw                     3654
+tag PCOB typed                   7316
+tag PPTH typed                   5484
+tag PQT2 typed                   1797
+tag PQTZ typed                   1831
+tag PSSI typed                   1794
+tag PVB2 typed                   1731
+tag PVBR raw                     1831
+tag PWAV typed                   1831
+tag PWV2 typed                   1831
+tag PWV3 typed                   1827
+tag PWV4 typed                   1826
+tag PWV5 typed                   1826
+tag PWV6 typed                   1826
+tag PWV7 typed                   1826
+tag PWVC raw                     1826
+failures                         0

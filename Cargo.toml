@@ -1,0 +1,18 @@
+[package]
+name = "rekordbox-formats"
+version = "0.1.0"
+edition = "2021"
+description = "Clean-room implementation of rekordbox data formats (ANLZ analysis files, rekordbox.xml) from SPEC.md"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "rekordbox_formats"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rbf"
+path = "src/bin/rbf.rs"
+
+[dependencies]
+quick-xml = "=0.31.0"
