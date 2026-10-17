@@ -15,16 +15,22 @@ pub fn is_audio(p: &Path) -> bool {
 pub enum Entry {
     Folder(PathBuf),
     Track(PathBuf),
+    /// Virtual folder with the library tracks (shown at the root once a library is set).
+    Library,
 }
 
 impl Entry {
     pub fn path(&self) -> &Path {
         match self {
             Entry::Folder(p) | Entry::Track(p) => p,
+            Entry::Library => Path::new(""),
         }
     }
 
     pub fn name(&self) -> String {
+        if *self == Entry::Library {
+            return "[Library]".into();
+        }
         self.path().file_name().map_or_else(|| self.path().display().to_string(), |n| n.to_string_lossy().into_owned())
     }
 }
@@ -36,6 +42,8 @@ pub enum View {
     TagList,
     /// Tracks related to a file (same artist prefix "Artist - Title").
     Related(PathBuf),
+    /// All library tracks.
+    Library,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +55,8 @@ pub struct Browser {
     pub tags: Vec<PathBuf>,
     /// Waveform zoom level (BROWSE + SHIFT), 1..=8, kept for a display.
     pub zoom: i32,
+    /// Library tracks (audio paths, in display order).
+    pub library: Vec<PathBuf>,
 }
 
 fn list_dir(dir: &Path) -> Vec<Entry> {
@@ -75,7 +85,15 @@ fn artist_of(p: &Path) -> Option<String> {
 
 impl Browser {
     pub fn new(root: PathBuf) -> Browser {
-        let mut b = Browser { view: View::Folder(root.clone()), root, entries: Vec::new(), selected: 0, tags: Vec::new(), zoom: 4 };
+        let mut b = Browser {
+            view: View::Folder(root.clone()),
+            root,
+            entries: Vec::new(),
+            selected: 0,
+            tags: Vec::new(),
+            zoom: 4,
+            library: Vec::new(),
+        };
         b.refresh();
         b
     }
@@ -91,7 +109,11 @@ impl Browser {
     /// Re-read the current view.
     pub fn refresh(&mut self) {
         self.entries = match &self.view {
+            View::Folder(d) if d == &self.root && !self.library.is_empty() => {
+                std::iter::once(Entry::Library).chain(list_dir(d)).collect()
+            }
             View::Folder(d) => list_dir(d),
+            View::Library => self.library.iter().cloned().map(Entry::Track).collect(),
             View::TagList => self.tags.iter().cloned().map(Entry::Track).collect(),
             View::Related(f) => {
                 let artist = artist_of(f);
@@ -116,13 +138,20 @@ impl Browser {
 
     /// BROWSE press: open the selected folder. Returns true when the view changed.
     pub fn enter(&mut self) -> bool {
-        if let Some(Entry::Folder(p)) = self.selected_entry().cloned() {
-            self.view = View::Folder(p);
-            self.selected = 0;
-            self.refresh();
-            return true;
+        match self.selected_entry().cloned() {
+            Some(Entry::Folder(p)) => self.view = View::Folder(p),
+            Some(Entry::Library) => self.view = View::Library,
+            _ => return false,
         }
-        false
+        self.selected = 0;
+        self.refresh();
+        true
+    }
+
+    /// Set the library tracks (shown as `[Library]` at the root).
+    pub fn set_library(&mut self, tracks: Vec<PathBuf>) {
+        self.library = tracks;
+        self.refresh();
     }
 
     /// BACK: parent folder (not above the root); from the tag list / related view back to folders.
@@ -130,7 +159,7 @@ impl Browser {
         let next = match &self.view {
             View::Folder(d) if d != &self.root => d.parent().map(Path::to_path_buf),
             View::Folder(_) => None,
-            View::TagList | View::Related(_) => Some(self.root.clone()),
+            View::TagList | View::Related(_) | View::Library => Some(self.root.clone()),
         };
         if let Some(d) = next {
             let came_from = match &self.view {
@@ -193,7 +222,7 @@ impl Browser {
             .into_iter()
             .filter_map(|e| match e {
                 Entry::Track(p) => Some(p),
-                Entry::Folder(_) => None,
+                Entry::Folder(_) | Entry::Library => None,
             })
             .collect();
         let i = tracks.iter().position(|p| p == current)?;
@@ -206,13 +235,14 @@ impl Browser {
         let title = match &self.view {
             View::Folder(d) => d.display().to_string(),
             View::TagList => "[tag list]".into(),
+            View::Library => "[Library]".into(),
             View::Related(p) => format!("[related to {}]", p.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())),
         };
         let mut s = format!("{title} ({} entries)", self.entries.len());
         let lo = self.selected.saturating_sub(2);
         for (i, e) in self.entries.iter().enumerate().skip(lo).take(5) {
             let mark = if i == self.selected { ">" } else { " " };
-            let kind = if matches!(e, Entry::Folder(_)) { "/" } else { "" };
+            let kind = if matches!(e, Entry::Folder(_) | Entry::Library) { "/" } else { "" };
             let tag = if self.tags.iter().any(|t| t == e.path()) { " *" } else { "" };
             s.push_str(&format!("\n {mark} {}{kind}{tag}", e.name()));
         }

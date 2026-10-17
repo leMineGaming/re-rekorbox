@@ -13,6 +13,9 @@
 //! `--samples DIR` fills the sampler from a folder (else built-in sounds), `--browse DIR` sets the
 //! browser root for BROWSE/LOAD (default: the user's Music folder). `--djlink [ADAPTER]` joins the
 //! Pro DJ Link network on that adapter (name part or IP; default: first private / link-local one),
+//! The rekordbox library (analysis folder + music folder, `--anlz DIR`, `--music DIR`, `--no-library`)
+//! is read in the background; loaded files get beat grid, beat positions and cues from it; `lib words`
+//! searches it, `lload <deck> <n>` loads a search result, the browser shows `[Library]`.
 //! sends beat packets of the playing deck; `link` on stdin shows the network, `linksync 1 on [N]` lets
 //! deck 1 follow tempo and beat of DJ Link device N (default: the first one sending beats).
 //! Sources: an audio file path, `tone` (440 Hz sine) or `click:BPM` (click track) – the latter two
@@ -140,13 +143,17 @@ fn play(rest: &[&str]) -> Result<(), String> {
     let device = opts.iter().find(|(k, _)| *k == "device").map(|(_, v)| *v);
     let out = Output::open(device)?;
     println!("output: {} ({} Hz, {} ch)", out.device_name, out.sample_rate, out.channels);
+    let loader = Loader::new(out.sender(), out.sample_rate);
+    if !opts.iter().any(|(k, _)| *k == "no-library") {
+        let opt = |k: &str| opts.iter().find(|(o, _)| *o == k).map(|(_, v)| std::path::PathBuf::from(v));
+        loader.start_library(opt("anlz"), opt("music"));
+    }
     for (d, s) in sources.iter().take(2).enumerate() {
-        let (pcm, grid) = source(s, out.sample_rate)?;
-        out.send(Command::Load { deck: d, pcm, grid });
+        loader.load(d, s);
     }
     fill_sampler(&out, opts.iter().find(|(k, _)| *k == "samples").map(|(_, v)| Path::new(*v)));
     let ctl = match opts.iter().find(|(k, _)| *k == "midi") {
-        Some((_, m)) => Some(start_controller(m, &opts, &out)?),
+        Some((_, m)) => Some(start_controller(m, &opts, &out, &loader)?),
         None => None,
     };
     let link = match opts.iter().find(|(k, _)| *k == "djlink") {
@@ -161,14 +168,56 @@ fn play(rest: &[&str]) -> Result<(), String> {
             }
         }
     }
-    println!("commands: play 1, cue 1, hot 1 1, loop 1 4, tempo 1 0.2, sync 2, xf 0, load 2 <file>, midi 90 00 7F, state, quit");
+    println!("commands: play 1, cue 1, hot 1 1, loop 1 4, tempo 1 0.2, sync 2, xf 0, load 2 <file>, lib <words>, lload 1 <n>, midi 90 00 7F, state, quit");
+    let mut results: Vec<std::path::PathBuf> = Vec::new();
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|e| e.to_string())?;
         let line = line.trim();
         match line {
             "" => continue,
             "quit" | "q" | "exit" => break,
-            "state" | "s" => print_state(&out),
+            "state" | "s" => {
+                print_state(&out);
+                for d in 0..2 {
+                    if let Some(t) = loader.title(d) {
+                        println!("deck {}: {t}", d + 1);
+                    }
+                }
+            }
+            l if l == "lib" || l.starts_with("lib ") => match loader.library() {
+                Some(guard) => {
+                    let lib = guard.as_ref().unwrap();
+                    let found = lib.search(l.get(4..).unwrap_or(""));
+                    results = found.iter().filter_map(|t| t.path.clone()).collect();
+                    println!("{} of {} tracks", found.len(), lib.tracks.len());
+                    for (i, t) in found.iter().filter(|t| t.path.is_some()).take(30).enumerate() {
+                        println!(
+                            "  {:>3}  {} - {}  {}{}",
+                            i + 1,
+                            t.artist.as_deref().unwrap_or("?"),
+                            t.title,
+                            t.bpm().map_or("-".into(), |b| format!("{b:.2} BPM")),
+                            if t.variable_tempo() { " (variable)" } else { "" }
+                        );
+                    }
+                }
+                None => println!("library not ready (or disabled)"),
+            },
+            l if l.starts_with("lload ") => {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                let d = w.get(1).and_then(|d| d.parse::<usize>().ok()).filter(|d| (1..=2).contains(d));
+                let n = w.get(2).and_then(|n| n.parse::<usize>().ok()).filter(|&n| n >= 1 && n <= results.len());
+                match (d, n) {
+                    (Some(d), Some(n)) => {
+                        let p = results[n - 1].clone();
+                        loader.load(d - 1, &p.to_string_lossy());
+                        if let Some(c) = &ctl {
+                            c.controller.lock().unwrap().set_loaded_path(d - 1, &p);
+                        }
+                    }
+                    _ => eprintln!("lload <deck> <number from the last lib search>"),
+                }
+            }
             "link" => match &link {
                 Some(l) => print_link(&l.link.lock().unwrap()),
                 None => eprintln!("start with --djlink [adapter]"),
@@ -204,7 +253,7 @@ fn play(rest: &[&str]) -> Result<(), String> {
                         for cmd in cmds {
                             out.send(cmd);
                         }
-                        side_effects(&c.controller, &out.sender(), out.sample_rate);
+                        side_effects(&c.controller, &loader);
                     }
                     None => eprintln!("first byte must be a status byte"),
                 },
@@ -215,15 +264,13 @@ fn play(rest: &[&str]) -> Result<(), String> {
                 let mut p = l.splitn(3, ' ').skip(1);
                 let d = p.next().and_then(|d| d.parse::<usize>().ok()).filter(|d| (1..=2).contains(d));
                 match (d, p.next()) {
-                    (Some(d), Some(f)) => match source(f.trim().trim_matches('"'), out.sample_rate) {
-                        Ok((pcm, grid)) => {
-                            out.send(Command::Load { deck: d - 1, pcm, grid });
-                            if let Some(c) = &ctl {
-                                c.controller.lock().unwrap().set_loaded_path(d - 1, Path::new(f.trim().trim_matches('"')));
-                            }
+                    (Some(d), Some(f)) => {
+                        let f = f.trim().trim_matches('"');
+                        loader.load(d - 1, f);
+                        if let Some(c) = &ctl {
+                            c.controller.lock().unwrap().set_loaded_path(d - 1, Path::new(f));
                         }
-                        Err(e) => eprintln!("{e}"),
-                    },
+                    }
                     _ => eprintln!("load <deck> <file>"),
                 }
             }
@@ -346,8 +393,12 @@ fn fill_sampler(out: &Output, dir: Option<&Path>) {
     println!("sampler: {}", names.join(", "));
 }
 
-/// Loads requested by the controller (decoded on a worker thread) and browser display updates.
-fn side_effects(c: &Arc<std::sync::Mutex<Controller>>, tx: &std::sync::mpsc::Sender<Command>, sample_rate: u32) {
+/// Loads requested by the controller (decoded on a worker thread), the library for the browser once it
+/// is ready, and browser display updates.
+fn side_effects(c: &Arc<std::sync::Mutex<Controller>>, loader: &Loader) {
+    if let Some(tracks) = loader.take_library_for_browser() {
+        c.lock().unwrap().set_library(tracks);
+    }
     let (loads, browser) = {
         let mut g = c.lock().unwrap();
         let changed = g.take_browser_changed();
@@ -357,11 +408,104 @@ fn side_effects(c: &Arc<std::sync::Mutex<Controller>>, tx: &std::sync::mpsc::Sen
         println!("{text}");
     }
     for (deck, path) in loads {
-        let tx = tx.clone();
-        std::thread::spawn(move || match source(&path.to_string_lossy(), sample_rate) {
+        loader.load(deck, &path.to_string_lossy());
+    }
+}
+
+type Shared<T> = Arc<std::sync::Mutex<T>>;
+
+/// Loads audio on worker threads and attaches the library analysis (grid, beats, cues).
+#[derive(Clone)]
+struct Loader {
+    tx: std::sync::mpsc::Sender<Command>,
+    sample_rate: u32,
+    library: Arc<std::sync::RwLock<Option<rekordbox_formats::library::Library>>>,
+    loaded: Shared<[Option<String>; 2]>,
+    titles: Shared<[Option<String>; 2]>,
+    browser_pending: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Loader {
+    fn new(tx: std::sync::mpsc::Sender<Command>, sample_rate: u32) -> Loader {
+        Loader {
+            tx,
+            sample_rate,
+            library: Default::default(),
+            loaded: Default::default(),
+            titles: Default::default(),
+            browser_pending: Default::default(),
+        }
+    }
+
+    /// Read the library in the background; analyses are then attached to already loaded decks.
+    fn start_library(&self, anlz: Option<std::path::PathBuf>, music: Option<std::path::PathBuf>) {
+        use rekordbox_formats::library::{default_anlz_root, default_music_root, Library};
+        let (Some(anlz), Some(music)) = (anlz.or_else(default_anlz_root), music.or_else(default_music_root)) else {
+            println!("library: no rekordbox analysis folder or music folder found");
+            return;
+        };
+        let me = self.clone();
+        std::thread::spawn(move || {
+            let lib = Library::build(&anlz, &[music]);
+            let r = lib.report;
+            println!("library: {} tracks, {} with audio file, {} with beat grid", r.tracks, r.matched, r.with_grid);
+            *me.library.write().unwrap() = Some(lib);
+            me.browser_pending.store(true, std::sync::atomic::Ordering::Relaxed);
+            let loaded = me.loaded.lock().unwrap().clone();
+            for (deck, path) in loaded.iter().enumerate() {
+                if let Some(p) = path {
+                    me.apply(deck, p);
+                }
+            }
+        });
+    }
+
+    fn library(&self) -> Option<std::sync::RwLockReadGuard<'_, Option<rekordbox_formats::library::Library>>> {
+        let g = self.library.read().ok()?;
+        g.is_some().then_some(g)
+    }
+
+    /// Playable library tracks for the browser, once after the library became ready.
+    fn take_library_for_browser(&self) -> Option<Vec<std::path::PathBuf>> {
+        if !self.browser_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let g = self.library.read().ok()?;
+        Some(g.as_ref()?.playable().filter_map(|t| t.path.clone()).collect())
+    }
+
+    fn title(&self, deck: usize) -> Option<String> {
+        self.titles.lock().unwrap()[deck].clone()
+    }
+
+    /// Send the analysis of `path` to `deck` if the library knows it.
+    fn apply(&self, deck: usize, path: &str) {
+        let g = self.library.read().unwrap();
+        let Some(lib) = g.as_ref() else { return };
+        let Some(t) = lib.by_path(Path::new(path)) else { return };
+        let a = rbx_engine::analysis::TrackAnalysis::from_library(t);
+        println!(
+            "deck {}: {} – {}{}",
+            deck + 1,
+            a.title,
+            a.grid.map_or("no beat grid".into(), |g| format!("{:.2} BPM", g.bpm)),
+            if a.variable_tempo { " (variable tempo)" } else { "" }
+        );
+        self.titles.lock().unwrap()[deck] = Some(a.title.clone());
+        let _ = self.tx.send(Command::ApplyAnalysis { deck, analysis: Arc::new(a) });
+    }
+
+    /// Decode on a worker thread, load, then attach the analysis.
+    fn load(&self, deck: usize, spec: &str) {
+        let me = self.clone();
+        let spec = spec.to_string();
+        std::thread::spawn(move || match source(&spec, me.sample_rate) {
             Ok((pcm, grid)) => {
-                println!("deck {}: {}", deck + 1, path.display());
-                let _ = tx.send(Command::Load { deck, pcm, grid });
+                println!("deck {}: loaded {spec}", deck + 1);
+                let _ = me.tx.send(Command::Load { deck, pcm, grid });
+                me.loaded.lock().unwrap()[deck] = Some(spec.clone());
+                me.titles.lock().unwrap()[deck] = None;
+                me.apply(deck, &spec);
             }
             Err(e) => eprintln!("{e}"),
         });
@@ -408,7 +552,7 @@ struct ControllerHandle {
     _input: Option<rekordbox_formats::midi_device::InputPort>,
 }
 
-fn start_controller(mapping: &str, opts: &[(&str, &str)], out: &Output) -> Result<ControllerHandle, String> {
+fn start_controller(mapping: &str, opts: &[(&str, &str)], out: &Output, loader: &Loader) -> Result<ControllerHandle, String> {
     let m = load_mapping(Path::new(mapping))?;
     let device = m.device.clone();
     let controller = Arc::new(std::sync::Mutex::new(Controller::new(m)));
@@ -438,7 +582,7 @@ fn start_controller(mapping: &str, opts: &[(&str, &str)], out: &Output) -> Resul
             Some(d) => {
                 let (port, rx) = InputPort::open(d.index)?;
                 println!("MIDI in: {}", d.name);
-                let (c, tx, sr) = (controller.clone(), out.sender(), out.sample_rate);
+                let (c, tx, ld) = (controller.clone(), out.sender(), loader.clone());
                 std::thread::spawn(move || {
                     for (packed, ms) in rx {
                         if let Some(msg) = MidiMessage::from_packed(packed, f64::from(ms) / 1000.0) {
@@ -446,7 +590,7 @@ fn start_controller(mapping: &str, opts: &[(&str, &str)], out: &Output) -> Resul
                             for cmd in cmds {
                                 let _ = tx.send(cmd);
                             }
-                            side_effects(&c, &tx, sr);
+                            side_effects(&c, &ld);
                         }
                     }
                 });

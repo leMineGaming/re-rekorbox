@@ -455,6 +455,14 @@ impl Controller {
         self.browser.as_ref()
     }
 
+    /// Library tracks for the browser's `[Library]` folder.
+    pub fn set_library(&mut self, tracks: Vec<PathBuf>) {
+        if let Some(b) = self.browser.as_mut() {
+            b.set_library(tracks);
+            self.browser_changed = true;
+        }
+    }
+
     /// True once after the browser view or selection changed.
     pub fn take_browser_changed(&mut self) -> bool {
         std::mem::take(&mut self.browser_changed)

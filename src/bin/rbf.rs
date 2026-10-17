@@ -11,6 +11,7 @@
 //! rbf midi-devices               list MIDI input/output devices (Windows)
 //! rbf midi-monitor <mapping> [device] [seconds]   decode live MIDI input with a mapping (Windows)
 //! rbf djlink-listen [seconds] [--raw]   passively decode Pro DJ Link traffic on UDP 50000-50002
+//! rbf library [anlz root] [music root] [search words]   build the library from rekordbox analysis files
 //! ```
 
 use rekordbox_formats::anlz::waveform::WavePreview;
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         ["midi-monitor", m, rest @ ..] => midi_monitor(Path::new(m), rest),
         ["djlink-listen", rest @ ..] => djlink_listen(rest),
+        ["library", rest @ ..] => show_library(rest),
         _ => Err(
             "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir> | rbf midi-route <mapping>              | rbf midi-decode <mapping> <hex>... | rbf midi-devices | rbf midi-monitor <mapping> [device] [seconds] | rbf djlink-listen [seconds] [--raw]"
                 .into(),
@@ -549,6 +551,37 @@ fn djlink_listen(rest: &[&str]) -> R {
     println!("devices:");
     for d in table.devices() {
         println!("  #{:<3} {:<20} kind {} ip {}{}", d.number, d.name, d.kind, d.ip, if d.second_deck { " (second deck)" } else { "" });
+    }
+    Ok(())
+}
+
+fn show_library(rest: &[&str]) -> R {
+    use rekordbox_formats::library::{default_anlz_root, default_music_root, Library};
+    let arg = |i: usize| rest.get(i).filter(|s| !s.is_empty()).map(PathBuf::from);
+    let anlz = arg(0).or_else(default_anlz_root).ok_or("no analysis folder found")?;
+    let music = arg(1).or_else(default_music_root).ok_or("no music folder found")?;
+    let t = std::time::Instant::now();
+    let lib = Library::build(&anlz, &[music.clone()]);
+    let r = lib.report;
+    println!("analysis: {}  music: {}  ({:.1} s)", anlz.display(), music.display(), t.elapsed().as_secs_f64());
+    println!(
+        "{} analysis folders, {} unreadable, {} tracks; {} matched to audio files ({} ambiguous names), {} missing",
+        r.anlz_dirs, r.unreadable, r.tracks, r.matched, r.ambiguous, r.missing
+    );
+    println!(
+        "{} with beat grid ({} variable tempo), {} with cues, {} with phrases; {} audio files indexed",
+        r.with_grid, r.variable_tempo, r.with_cues, r.with_phrases, r.music_files
+    );
+    let query = rest.get(2..).map(|w| w.join(" ")).unwrap_or_default();
+    let shown: Vec<_> = if query.is_empty() { lib.tracks.iter().take(10).collect() } else { lib.search(&query) };
+    for tr in shown.iter().take(20) {
+        println!(
+            "  {:<60} {:>7} {}{}",
+            format!("{} - {}", tr.artist.as_deref().unwrap_or("?"), tr.title),
+            tr.bpm().map_or("-".into(), |b| format!("{b:.2}")),
+            if tr.path.is_some() { "" } else { "(no file) " },
+            tr.structure.as_ref().map_or(String::new(), |s| format!("{} phrases", s.phrases.len()))
+        );
     }
     Ok(())
 }

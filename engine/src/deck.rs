@@ -46,6 +46,83 @@ impl Grid {
     }
 }
 
+/// Beat positions of a track (from an analysis), for tracks with changing tempo. Beat 0 is the
+/// first downbeat; times before the first / after the last beat are extrapolated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BeatMap {
+    /// Beat times in seconds, ascending.
+    pub times: Vec<f64>,
+    /// Index of the first downbeat in `times`.
+    pub downbeat_index: usize,
+    /// Tempo per beat from the analysis (BPM); empty = derive from the beat distances.
+    pub bpms: Vec<f64>,
+}
+
+impl BeatMap {
+    /// Build from beat times and beat-in-bar numbers (1 = downbeat); `None` with fewer than 2 beats.
+    pub fn new(times: Vec<f64>, beat_in_bar: &[u16]) -> Option<BeatMap> {
+        if times.len() < 2 {
+            return None;
+        }
+        let downbeat_index = beat_in_bar.iter().position(|&b| b == 1).unwrap_or(0);
+        Some(BeatMap { times, downbeat_index, bpms: Vec::new() })
+    }
+
+    /// Attach the stored tempo of each beat (more precise than millisecond beat distances).
+    pub fn with_bpms(mut self, bpms: Vec<f64>) -> BeatMap {
+        if bpms.len() == self.times.len() && bpms.iter().all(|&b| b > 0.0) {
+            self.bpms = bpms;
+        }
+        self
+    }
+
+    /// Track tempo at time `t`.
+    pub fn bpm_at(&self, t: f64) -> f64 {
+        match self.bpms.get(self.segment(t)) {
+            Some(&b) => b,
+            None => 60.0 / self.beat_len_at(t),
+        }
+    }
+
+    fn interval(&self, i: usize) -> f64 {
+        let i = i.min(self.times.len() - 2);
+        (self.times[i + 1] - self.times[i]).max(1e-3)
+    }
+
+    /// Index `i` with `times[i] <= t < times[i + 1]` (clamped to the valid range).
+    fn segment(&self, t: f64) -> usize {
+        match self.times.partition_point(|&x| x <= t) {
+            0 => 0,
+            n => (n - 1).min(self.times.len() - 2),
+        }
+    }
+
+    /// Fractional beat number at time `t` (beat 0 = first downbeat).
+    pub fn beat_at(&self, t: f64) -> f64 {
+        let i = self.segment(t);
+        i as f64 + (t - self.times[i]) / self.interval(i) - self.downbeat_index as f64
+    }
+
+    /// Time of a fractional beat number.
+    pub fn time_of(&self, beat: f64) -> f64 {
+        let idx = beat + self.downbeat_index as f64;
+        let last = self.times.len() - 1;
+        if idx <= 0.0 {
+            return self.times[0] + idx * self.interval(0);
+        }
+        if idx >= last as f64 {
+            return self.times[last] + (idx - last as f64) * self.interval(last - 1);
+        }
+        let i = idx.floor() as usize;
+        self.times[i] + (idx - i as f64) * self.interval(i)
+    }
+
+    /// Length of the beat around time `t` in seconds.
+    pub fn beat_len_at(&self, t: f64) -> f64 {
+        self.interval(self.segment(t))
+    }
+}
+
 /// Active or prepared loop (frames).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Loop {
@@ -119,6 +196,8 @@ pub struct Deck {
     pub trim: f32,
     /// Quantize hot cues / loops to the beat grid.
     pub quantize: bool,
+    /// Exact beat positions (overrides the constant grid for beat math when present).
+    beat_map: Option<Arc<BeatMap>>,
     reverse: bool,
     slip: bool,
     /// Background position while slip is on.
@@ -160,6 +239,7 @@ impl Default for Deck {
             hot_preview: None,
             lp: None,
             grid: None,
+            beat_map: None,
             volume: 1.0,
             trim: 1.0,
             quantize: false,
@@ -207,6 +287,7 @@ impl Deck {
     pub fn load(&mut self, pcm: Arc<Pcm>, grid: Option<Grid>) {
         self.pcm = Some(pcm);
         self.grid = grid;
+        self.beat_map = None;
         self.pos = 0.0;
         self.playing = false;
         self.ramp = 0.0;
@@ -239,6 +320,7 @@ impl Deck {
     pub fn copy_from(&mut self, other: &Deck) {
         let Some(pcm) = other.pcm.clone() else { return };
         self.load(pcm, other.grid);
+        self.beat_map = other.beat_map.clone();
         self.pos = other.pos;
         self.shadow = other.pos;
         self.scratch_target = other.pos;
@@ -448,9 +530,63 @@ impl Deck {
         self.tempo_fader = off / self.tempo_range();
     }
 
-    /// Effective BPM (grid BPM × tempo), if a grid is known.
+    /// Effective BPM (grid BPM × tempo; with a beat map the local tempo), if beats are known.
     pub fn bpm(&self) -> Option<f64> {
-        self.grid.map(|g| g.bpm * self.tempo())
+        self.base_bpm_at(self.position_s()).map(|b| b * self.tempo())
+    }
+
+    /// Track tempo (without the tempo fader) at time `t`.
+    pub fn base_bpm_at(&self, t: f64) -> Option<f64> {
+        match (&self.beat_map, self.grid) {
+            (Some(m), _) => Some(m.bpm_at(t)),
+            (None, Some(g)) => Some(g.bpm),
+            _ => None,
+        }
+    }
+
+    /// Fractional beat number at time `t` (beat 0 = first downbeat).
+    pub fn beat_at_s(&self, t: f64) -> Option<f64> {
+        match (&self.beat_map, self.grid) {
+            (Some(m), _) => Some(m.beat_at(t)),
+            (None, Some(g)) => Some(g.beat_at(t)),
+            _ => None,
+        }
+    }
+
+    /// Length of the beat around `t` in seconds (0.5 s = 120 BPM without beat information).
+    pub fn beat_len_at(&self, t: f64) -> f64 {
+        match (&self.beat_map, self.grid) {
+            (Some(m), _) => m.beat_len_at(t),
+            (None, Some(g)) => g.beat_s(),
+            _ => 0.5,
+        }
+    }
+
+    /// Time `beats` beats after `t` (follows tempo changes of a beat map).
+    pub fn time_after_beats(&self, t: f64, beats: f64) -> f64 {
+        match &self.beat_map {
+            Some(m) => m.time_of(m.beat_at(t) + beats),
+            None => t + beats * self.beat_len_at(t),
+        }
+    }
+
+    pub fn has_beats(&self) -> bool {
+        self.beat_map.is_some() || self.grid.is_some()
+    }
+
+    /// Exact beat positions from an analysis (`None` = use the constant grid only).
+    pub fn set_beat_map(&mut self, map: Option<Arc<BeatMap>>) {
+        self.beat_map = map;
+    }
+
+    /// Hot cues and memory cues from an analysis (seconds).
+    pub fn set_cues(&mut self, hot: [Option<f64>; HOT_CUES], memory: &[f64]) {
+        let sr = self.sr();
+        for (slot, h) in self.hot_cues.iter_mut().zip(hot) {
+            *slot = h.map(|s| s * sr);
+        }
+        self.memory = memory.iter().map(|s| s * sr).collect();
+        self.memory.sort_by(f64::total_cmp);
     }
 
     /// Current playback speed without the scratch override.
@@ -494,9 +630,16 @@ impl Deck {
     }
 
     fn quantized(&self, frames: f64) -> f64 {
-        match (self.quantize, self.grid) {
-            (true, Some(g)) => self.to_frames(g.nearest_beat(self.to_secs(frames))).clamp(0.0, self.len()),
-            _ => frames,
+        if !self.quantize {
+            return frames;
+        }
+        let t = self.to_secs(frames);
+        match self.beat_at_s(t) {
+            Some(b) => {
+                let nearest = self.time_after_beats(t, b.round() - b);
+                self.to_frames(nearest).clamp(0.0, self.len())
+            }
+            None => frames,
         }
     }
 
@@ -588,9 +731,8 @@ impl Deck {
         if !self.is_loaded() || beats <= 0.0 {
             return;
         }
-        let beat_s = self.grid.map_or(0.5, |g| g.beat_s());
         let start = self.quantized(self.pos);
-        let end = (start + self.to_frames(beat_s * beats)).min(self.len());
+        let end = self.to_frames(self.time_after_beats(self.to_secs(start), beats)).min(self.len());
         self.lp = Some(Loop { start, end, active: true });
     }
 
@@ -610,9 +752,8 @@ impl Deck {
         if !self.is_loaded() {
             return;
         }
-        let beat_s = self.grid.map_or(0.5, |g| g.beat_s());
-        let delta = self.to_frames(beats * beat_s);
-        let new = (self.pos + delta).clamp(0.0, self.len());
+        let target = self.time_after_beats(self.position_s(), beats);
+        let new = self.to_frames(target).clamp(0.0, self.len());
         let moved = new - self.pos;
         self.pos = new;
         self.scratch_target = new;
@@ -686,7 +827,7 @@ impl Deck {
             memory_cues: self.memory.len(),
             auto_cue: self.auto_cue,
             brake_s: self.brake_s,
-            beat: self.grid.map(|g| g.beat_at(self.position_s())),
+            beat: self.beat_at_s(self.position_s()),
         }
     }
 
