@@ -689,6 +689,24 @@ rekordbox: Geräteart 4; bevorzugte Nummer 0x11 (17), mit gesetztem Schalter 0x1
 Zeitgeber (ms, ebd.): 100, 100, 300, 2000, 30000, 300, 10000; CompatiRequest bis zu 3× im 100-ms-Takt, danach
 DiscoveryRequest [GH:0x14136e470].
 
+**Ablauf der Nummernvergabe** (Zustandsbyte Objekt +0x164) [GH:0x14136e5c0 timerFuncDiscoveryResponse,
+GH:0x14136e690 timerFuncIdResponse, GH:0x14136bb00, GH:0x14136ccf0]:
+1. *Discovery* (Zustand 2): DiscoveryRequest alle 100 ms; nach dem 3. Senden Zähler und Belegt-Maske
+   (+0x1AC) löschen, IdUseRequest für die gewünschte Nummer senden → Zustand 5.
+2. *IdUse* (Zustand 5): alle 100 ms IdUseRequest, wobei die angefragte Nummer reihum 0x11 → 0x12 → 0x29 →
+   0x2A → 0x2B → 0x2C → 0x11 … wechselt. Belegt-Bits (0x11 = Bit 0, 0x12 = Bit 1, 0x29…0x2C = Bit 2…5) setzen
+   Keep-alives anderer Geräte mit diesen Nummern und IdUseResponse mit Status b[2] = 1 [GH:0x14136bb00 case 3].
+   Nach mehr als 5 Durchläufen (Ende bei 0x2C): je nach Modus erste freie Nummer aus {0x11, 0x12} oder
+   {0x29 … 0x2C}; sind alle belegt → Standardnummer, Zustand 3, Neuversuch nach 30000 ms. Sonst „Link UP
+   STATE_RUN“: sofort ConfigNotify, danach Keep-alive-Zeitgeber 2000 ms (+0x156). Sonderfall Nummer 0x17
+   („Mode23“): direkt Link UP.
+3. *IdSet* (Zustand 4): IdSetRequest bis zu 6× wiederholen; Antwort 03/01 mit b[2] = 0 → Link UP; sonst
+   Zustand 3, 30000 ms warten.
+4. *Betrieb* (Zustand 6/8): IdUseRequest anderer Geräte für die eigene Nummer → IdUseResponse (b[2] = 1).
+   Keep-alive mit der eigenen Nummer von einem anderen Gerät → Disconnect senden, Zustand 3, Neustart nach
+   300 ms (+0x15A). Je Gerät läuft ein Alterungs-Zeitgeber; Ablauf → Gerät entfernen [GH:0x14136ec70]
+   (Dauer vermutlich 10000 ms, U31).
+
 Empfangen [`frameRead` GH:0x14136bb00, Nutzdaten b = Paket + 0x24]:
 - Name `CDJ-2000`/`CDJ-900` mit 0x21 = 0 wird (je nach Modus) verworfen.
 - **06/00 Keep-alive** [`readConfigNotify` GH:0x14136ccf0]: gültig nur mit Nummer b[0] ∈ 1…0x50 und
@@ -788,6 +806,7 @@ Mixer-Status 0x29 liefert dann beide Abspielzustände. Bestätigung nur per Mits
 | U28 | DJ Link CDJ-Status: genaue Bedeutung der Ladeinfo-Bytes 0x28–0x2A und von u32 0x2C/0x34 | Mitschnitt mit geladenem Track |
 | U29 | DJ Link: Namen der Abspielzustands-Codes (0x78 bzw. Mixer-Status) – im Code nur Gruppierung belegt | Mitschnitt |
 | U30 | XDJ-RX3 im DJ-Link-Netz: tatsächliche Gerätenummer, Geräteart und gesendete Pakettypen | Mitschnitt mit `rbf djlink-listen` am Gerät |
+| U31 | DJ Link: Dauer des Alterungs-Zeitgebers je Gerät (vermutlich 10000 ms) und genaue Zahl der IdUse-Durchläufe | Mitschnitt |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |
