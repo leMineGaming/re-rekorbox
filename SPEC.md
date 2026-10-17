@@ -1,7 +1,7 @@
 # rekordbox 7.2.19 – Verhaltensspezifikation (Clean-Room)
 
-Status (Stand 2026-10-16): Target-Überblick (Abschn. 1–5) und **ANLZ-Format** (5a Beobachtung, 5b–5d Dekompilat)
-spezifiziert, **rekordbox.xml** (5e) aus dem Dekompilat. Noch offen: export.pdb, MIDI-CSV.
+Status (Stand 2026-10-17): Target-Überblick (Abschn. 1–5), **ANLZ** (5a–5d), **rekordbox.xml** (5e), **MIDI** (5f, 5f-2),
+Pads (5g), DeviceSQL (5h), **Pro DJ Link** (5i) spezifiziert. Noch offen: Seitenformat export.pdb (U23), Mitschnitte am Gerät (U28–U30).
 
 Legende für Belege:
 - **[REA:…]** = REA-Evidence-ID (Tool-Ergebnis mit Hash/Limitations)
@@ -645,6 +645,114 @@ Engine, API, Storage-Optionen und Zeilen-/String-Kodierung sind belegt (oben). *
 Seitenformat der persistenten Datei (Kopfseite, Seitenköpfe, Tabellenliste, Indexstrukturen) – der Seitenmanager ist
 groß und ohne Beispieldatei nicht gegenprüfbar. Benötigt wird ein USB-/Ordner-Export aus rekordbox als Testdatei.
 
+## 5i. Pro DJ Link – Netzwerkprotokoll (Dekompilat)
+
+Implementierung in `rekordbox.exe` (Klassen `InnerLinkAPI`, `prodjlink::ProDJLink`, Komponente
+`SysMgrMainComponent`, Threads „PSvLinkUDP“, „PSvLinkSysMgr“). NFS-Dateifreigabe läuft über `PSvNFSd.exe`/
+`NFSDaemon.dll` (nicht nachgebaut).
+
+**Ports** [GH:0x141367f70 prüft per `GetUdpTable`, ob belegt; GH:0x141367da0 Log „OK 2049/50000/…“]:
+2049 (NFS), **50000** (Ankündigung/Geräte-IDs), **50001** (Beat), **50002** (Status), 50004, 50111.
+Senden des Beat-Pakets an Port 50001 [GH:0x14135f980, Konstante 0xC351]. UDP über IPv4 (`socket(2,2,0)`),
+Empfangspuffer 0x5C0 Byte, Empfangs-Timeout 100 ms [GH:0x141369300].
+
+**Gemeinsamer Anfang**: Bytes 0x00–0x09 = ASCII `Qspt1WmJOL` (ohne Nullbyte), 0x0A = Pakettyp. Alle
+Mehrbyte-Zahlen big-endian (htons/htonl). Zwei Kopfvarianten:
+
+| | Port 50000 („kurz“) [GH:0x14136dbe0] | Ports 50001/50002 („lang“) [z. B. GH:0x141356060] |
+|---|---|---|
+| 0x0B | Untertyp | Name beginnt |
+| Name | 0x0C–0x1F (20 Byte, Null-aufgefüllt) | 0x0B–0x1E (20 Byte) |
+| 0x1F | – | Version; Empfänger verwerfen Werte ≥ 2 [GH:0x14135c880, 0x141365d80, 0x141362420] |
+| 0x20 | 0x01 | Unterversion (rekordbox sendet 1; steuert beim Status Zusatzfelder) |
+| 0x21 | 0x03 (rekordbox) | Gerätenummer |
+| 0x22–0x23 | Gesamtlänge des Pakets | Länge ab 0x24 (= Gesamtlänge − 0x24) |
+
+rekordbox sendet als Name `rekordbox`. Nutzdaten beginnen bei 0x24.
+
+### Port 50000: Geräte-IDs und Keep-alive (`SysMgrMainComponent`)
+
+Gesendet [GH:0x14136dc40 … 0x14136e420; Feldquellen aus dem Objekt, Init GH:0x14136ac30]:
+
+| Typ/Untertyp | Name im Log | Länge | Nutzdaten |
+|---|---|---|---|
+| 00/00 | DiscoveryRequest | 0x2C | 0x24 Zähler (1, 2, …), 0x25 Geräteart, 0x26–0x2B MAC |
+| 02/00 | IdUseRequest | 0x32 | 0x24–0x27 IP, 0x28–0x2D MAC, 0x2E gewünschte Nummer, 0x2F Zähler, 0x30 Geräteart, 0x31 = 1 |
+| 02/01 | IdSetRequest (Unicast) | 0x32 | wie 02/00 |
+| 03/00 | IdUseResponse | 0x27 | 0x24 Nummer aus der Anfrage (0x2E), 0x25 Zähler aus der Anfrage (0x2F), 0x26 = 1 |
+| 06/00 | ConfigNotify (**Keep-alive**) | 0x36 | 0x24 Nummer, 0x25 Wert (Objekt +0x166), 0x26–0x2B MAC, 0x2C–0x2F IP, 0x30 Anzahl bekannter Geräte, 0x34 Geräteart, 0x35 = 8 |
+| 08/00 | Disconnect | 0x29 | 0x24 Nummer, 0x25–0x28 IP |
+| 0A/00 | CompatiRequest | 0x25 | 0x24 Geräteart |
+| 0B/00 | – | 0x24 | keine |
+
+rekordbox: Geräteart 4; bevorzugte Nummer 0x11 (17), mit gesetztem Schalter 0x17 (23) [GH:0x14136ac30].
+Zeitgeber (ms, ebd.): 100, 100, 300, 2000, 30000, 300, 10000; CompatiRequest bis zu 3× im 100-ms-Takt, danach
+DiscoveryRequest [GH:0x14136e470].
+
+Empfangen [`frameRead` GH:0x14136bb00, Nutzdaten b = Paket + 0x24]:
+- Name `CDJ-2000`/`CDJ-900` mit 0x21 = 0 wird (je nach Modus) verworfen.
+- **06/00 Keep-alive** [`readConfigNotify` GH:0x14136ccf0]: gültig nur mit Nummer b[0] ∈ 1…0x50 und
+  Geräteart b[0x10] ∈ 1…9. Gerätetabelle je Nummer: belegt, Geräteart (b[0x10]), b[1], b[0x11], IP (b[8..12]),
+  MAC (b[2..8]). Neue Nummer → „add“, geänderte IP/MAC → „overwrite“. **Nummern 9 und 11 belegen zusätzlich
+  Nummer + 1** (Gerät mit zwei Decks); Name `OPUS-QUAD` mit Nummer 9 belegt zusätzlich einen eigenen Eintrag
+  (Meldung für Nummer 11). Gleiche Nummer wie die eigene → ID-Konflikt (eigene Nummer zurücksetzen, Disconnect).
+  Konflikt „CDJ AND XDJ EXIST“: eigener Modus „XDJ“ und fremde Nummer 1…4 bzw. Modus „CDJ“ und Nummer 9…12.
+  Geräteart 7 im ersten Keep-alive: „XDJ AP network“.
+- 02/00 IdUseRequest für die eigene Nummer → IdUseResponse. 02/02 mit Bitmasken (b[0x0C] ab Nummer 0x11, b[0x0F]
+  ab 0x29) → IdUseResponse.
+- 03/01 IdSetResponse: b[2] = 0 → Nummer übernommen („Link UP“, ab dann Keep-alive), 2 → Neustart.
+- 04: ID-Duplikat; 07/08 mit b[0] ∈ 1…0x50: Abmeldung; 09: Reject („CDJ AND XDJ EXIST“); 0B: Rücksetzen.
+
+### Port 50001: Beat (Typ 0x28, 0x60 Byte) [Parser GH:0x141356220, Sender GH:0x14135f980/0x141356140]
+
+| Offset | Inhalt | Beleg |
+|---|---|---|
+| 0x21, 0x5F | Gerätenummer | Sender schreibt beide |
+| 0x24 | ms bis zum nächsten Beat (= 60000/BPM) | GH:0x14134e200 |
+| 0x28 | ms bis zum übernächsten Beat (2 Beats) | ebd. |
+| 0x2C | ms bis zum nächsten Takt: (5 − Beat im Takt) Beats | GH:0x141352390 |
+| 0x30 | 4 Beats in ms | GH:0x14134e200 |
+| 0x34 | ms bis zum übernächsten Takt: (9 − Beat im Takt) Beats | GH:0x141352390 |
+| 0x38 | 8 Beats in ms | GH:0x14134e200 |
+| 0x3C–0x53 | 6 × u32, von rekordbox nicht gesetzt (0) | – |
+| 0x54 | Pitch, 0x100000 = ±0 % | GH:0x14134e200 |
+| 0x58 | BPM × 100 | ebd. |
+| 0x5C | Beat im Takt (1–4, zyklisch) | GH:0x141352390 |
+| 0x5D | weiteres Byte (Struktur +0x39) | – |
+
+Effektives Tempo (BPM × 100) = trunc(Pitch × BPM100 / 2^20) [GH:0x14134ead0 Nachricht 0x52, Konstante 2^−20
+@0x143830338]. Senden mit BPM ≤ 20: BPM100 = 2001 und Pitch = BPM × 2^20/20,01, sonst BPM100 = trunc(BPM × 100),
+Pitch = 0x100000 [GH:0x14134e200]. Weitere Typen auf 50001: 0x27 (u32 an 0x24, 0x28), 0x26 (u32 an 0x24),
+0x20/0x1F [GH:0x14135c880] – Bedeutung nicht bestimmt.
+
+### Port 50002: Status [Verteiler GH:0x141362420]
+
+**CDJ-Status Typ 0x0A** [Parser GH:0x1413644e0; Verwendung GH:0x141362420, GH:0x14134ead0]: Struktur-Offsets =
+Paket-Offsets. Pflichtteil bis 0x8B; Unterversion (0x20) ≥ 1 → 0x8C–0x9F; ≥ 2 → 0xA0–0xB7.
+- 0x0B Name (wird u. a. mit `OPUS-QUAD` verglichen), 0x21 Gerätenummer (1–8 → Tabelle 0–7; 9–12 eigene Tabelle).
+- Ladeinfo → Ereignis 0x41: Bytes 0x28, 0x29, 0x2A, u32 0x2C, u16 aus u32 0x34 (Bedeutung im Detail U28).
+- **u32 0x78: Abspielzustand** → Ereignis 0x20; Weitergabe nur für 0, 3, 4, 5, 6, 7, 8, 9, 0x0A, 0x0E, 0x10, 0x11,
+  0x12, dabei zusammengefasst: {3, 4, 7, 8, 9, 0x12} → 3; {0x0A, 0x0E} → 0x0A; 0, 5, 6, 0x10, 0x11 unverändert
+  [GH:0x14134ead0 case 0x20]. Namen der Zustände: U29.
+- 0x89 Flags: Bits 0x20/0x10 → Ereignis 0x47 (mit Byte 0x9E).
+- **0x8C Pitch, 0x90 BPM × 100** (Bit 31 wird maskiert; 0x7FFFFFFF = „kein Wert“) → Tempo wie beim Beat
+  [GH:0x14134ead0 case 0x4C].
+- 0x9F: Gerätenummer bei Master-Übergabe (0 und 0xFF = keine) → Ereignis 0x49 „noticeSyncMasterNo“.
+- 0xA0 u32 (OPUS-QUAD → Ereignis 0x69), 0xB4 u16 → Ereignis 0x58 („receiveAuthStatus“, Bitmaske ab Nummer 0x29).
+
+**Mixer-/All-in-one-Status Typ 0x29** [Parser GH:0x141365b40, Auswertung GH:0x141362420]: 0x21 = Gerätenummer n;
+je Deck ein 16-Byte-Block: Abspielzustand von Deck n = u32 an `n · 0x10 − 0x54`, von Deck n + 1 an
+`(n + 1) · 0x10 − 0x54` [GH:0x141365c60] – für n = 9 also 0x3C und 0x4C (passt zu „Nummern 9/11 belegen n + 1“).
+Ereignis 0x20 je Deck bei Änderung. Weitere Felder: 0x24–0x26, 0x28–0x2B, u16 0x2E, 0x30, 0x31, 0x34–0x36, u32 0x38,
+0x44–0x46, u32 0x48 (Bedeutung nicht bestimmt).
+
+Weitere Typen auf 50002 (nur erkannt, nicht spezifiziert): 0x05, 0x10, 0x12, 0x13, 0x18, 0x1A, 0x1C, 0x2F, 0x33,
+0x35, 0x37 (≥ 0x50 Byte), 0x46, 0x48, 0x56.
+
+**XDJ-RX3**: Die Firmware des Geräts ist nicht Teil dieser Analyse. Nach den Empfangsregeln oben erscheint ein
+All-in-one-Gerät als ein Keep-alive-Teilnehmer (vermutlich Nummer 9 oder 11) mit zwei Decks (n, n + 1); der
+Mixer-Status 0x29 liefert dann beide Abspielzustände. Bestätigung nur per Mitschnitt am Gerät möglich (U30).
+
 ## 6. Bewusst ausgeschlossen (Begründung)
 
 - **Lizenzierung / Kopierschutz** (`lsapiw64.dll`, `clatc.dll`, Aktivierung, Abo-Prüfung): wird weder analysiert noch nachgebaut oder umgangen.
@@ -677,6 +785,9 @@ groß und ohne Beispieldatei nicht gegenprüfbar. Benötigt wird ein USB-/Ordner
 | U25 | MIDI-CSV: Bedeutung der Typ-Codes 1–3, 0x15, 0x16 (kein Text bekannt; 9–11 = interne 14-Bit-Klassen, 5f-2) und Semantik von `Fast`/`RO`/`Priority` | Nutzer der Mapping-Struktur |
 | U26 | MIDI-Steuerobjekt: Zuordnung der Options-Felder (+0xD8…+0xE8 = Blink, Value, Min, Max, Priority) nur aus der Reihenfolge erschlossen | Rotary/RotaryAsKnob-Verhalten |
 | U27 | Rotary-Beschleunigung: GH:0x14299fd40 als `pow(f, n)` angenommen; Toggle/Parameter/JogRotateAbsPos/JogTimestamp-Eingang nicht bestimmt | Browse-Encoder-Feinverhalten |
+| U28 | DJ Link CDJ-Status: genaue Bedeutung der Ladeinfo-Bytes 0x28–0x2A und von u32 0x2C/0x34 | Mitschnitt mit geladenem Track |
+| U29 | DJ Link: Namen der Abspielzustands-Codes (0x78 bzw. Mixer-Status) – im Code nur Gruppierung belegt | Mitschnitt |
+| U30 | XDJ-RX3 im DJ-Link-Netz: tatsächliche Gerätenummer, Geräteart und gesendete Pakettypen | Mitschnitt mit `rbf djlink-listen` am Gerät |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |

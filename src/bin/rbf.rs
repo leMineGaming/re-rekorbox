@@ -10,6 +10,7 @@
 //! rbf midi-decode <mapping> <hex bytes>...   process messages offline, e.g. `B0 22 41 97 00 7F`
 //! rbf midi-devices               list MIDI input/output devices (Windows)
 //! rbf midi-monitor <mapping> [device] [seconds]   decode live MIDI input with a mapping (Windows)
+//! rbf djlink-listen [seconds] [--raw]   passively decode Pro DJ Link traffic on UDP 50000-50002
 //! ```
 
 use rekordbox_formats::anlz::waveform::WavePreview;
@@ -35,8 +36,9 @@ fn main() -> ExitCode {
         ["midi-devices"] => midi_devices(),
         #[cfg(windows)]
         ["midi-monitor", m, rest @ ..] => midi_monitor(Path::new(m), rest),
+        ["djlink-listen", rest @ ..] => djlink_listen(rest),
         _ => Err(
-            "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir> | rbf midi-route <mapping>              | rbf midi-decode <mapping> <hex>... | rbf midi-devices | rbf midi-monitor <mapping> [device] [seconds]"
+            "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir> | rbf midi-route <mapping>              | rbf midi-decode <mapping> <hex>... | rbf midi-devices | rbf midi-monitor <mapping> [device] [seconds] | rbf djlink-listen [seconds] [--raw]"
                 .into(),
         ),
     };
@@ -464,4 +466,89 @@ fn midi_monitor(path: &Path, rest: &[&str]) -> R {
             Err(e) => return Err(e.to_string()),
         }
     }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02X}")).collect::<Vec<_>>().join(" ")
+}
+
+/// Listen on the three DJ Link ports without sending anything; print decoded packets and the device
+/// table built from keep-alives. `--raw` also prints every datagram in hex (for captures).
+fn djlink_listen(rest: &[&str]) -> R {
+    use rekordbox_formats::djlink::{self, Announce, DeviceTable, Packet};
+    use std::net::UdpSocket;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let raw = rest.contains(&"--raw");
+    let seconds: Option<u64> = rest.iter().find_map(|s| s.parse().ok());
+    let (tx, rx) = mpsc::channel::<(u16, std::net::SocketAddr, Vec<u8>)>();
+    let mut bound = Vec::new();
+    for port in [djlink::PORT_ANNOUNCE, djlink::PORT_BEAT, djlink::PORT_STATUS] {
+        match UdpSocket::bind(("0.0.0.0", port)) {
+            Ok(sock) => {
+                let tx = tx.clone();
+                bound.push(port);
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 0x5C0];
+                    while let Ok((n, from)) = sock.recv_from(&mut buf) {
+                        if tx.send((port, from, buf[..n].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            Err(e) => eprintln!("port {port}: {e} (is rekordbox running?)"),
+        }
+    }
+    if bound.is_empty() {
+        return Err("no DJ Link port could be opened".into());
+    }
+    println!("listening on UDP {bound:?} (receive only); Ctrl+C to stop");
+    let mut table = DeviceTable::new(None);
+    let start = Instant::now();
+    loop {
+        if seconds.is_some_and(|s| start.elapsed() >= Duration::from_secs(s)) {
+            break;
+        }
+        let Ok((port, from, data)) = rx.recv_timeout(Duration::from_millis(200)) else { continue };
+        let t = start.elapsed().as_secs_f64();
+        if raw {
+            println!("{t:>9.3}s {port} {from} RAW {}", hex(&data));
+        }
+        match djlink::decode(port, &data) {
+            Ok(Packet::Announce(h, Announce::KeepAlive(k))) => {
+                let changes = table.apply(&k);
+                println!(
+                    "{t:>9.3}s {port} keep-alive {:?} #{} kind {} ip {} mac {} -> {changes:?}",
+                    h.name, k.device, k.kind, k.ip, hex(&k.mac)
+                );
+            }
+            Ok(Packet::Announce(h, Announce::Disconnect { device, ip })) => {
+                table.remove(device);
+                println!("{t:>9.3}s {port} disconnect {:?} #{device} ip {ip}", h.name);
+            }
+            Ok(Packet::Announce(h, a)) => println!("{t:>9.3}s {port} {:?}: {a:?}", h.name),
+            Ok(Packet::Beat(b)) => println!(
+                "{t:>9.3}s {port} beat #{} {:?} beat {}/4 tempo {:.2} BPM (pitch {:+.2} %) next beat {} ms",
+                b.device, b.name, b.beat_in_bar, f64::from(b.effective_bpm100()) / 100.0,
+                djlink::pitch_percent(b.pitch), b.next_beat_ms
+            ),
+            Ok(Packet::CdjStatus(s)) => println!(
+                "{t:>9.3}s {port} status #{} {:?} play-state {} flags {:02X} tempo {} master-handoff {:?} load {:?}/{}",
+                s.device, s.name, s.play_state, s.flags,
+                s.effective_bpm100().map_or("-".into(), |v| format!("{:.2}", f64::from(v) / 100.0)),
+                s.master_handoff, s.load_info, s.track_ref
+            ),
+            Ok(Packet::MixerStatus(m)) => println!("{t:>9.3}s {port} mixer #{} {:?} decks {:?}", m.device, m.name, m.decks),
+            Ok(Packet::Other(h)) => println!(
+                "{t:>9.3}s {port} type 0x{:02X} #{} {:?} ({} bytes, not decoded)", h.kind, h.device, h.name, data.len()
+            ),
+            Err(e) => println!("{t:>9.3}s {port} {from}: {e} ({} bytes)", data.len()),
+        }
+    }
+    println!("devices:");
+    for d in table.devices() {
+        println!("  #{:<3} {:<20} kind {} ip {}{}", d.number, d.name, d.kind, d.ip, if d.second_deck { " (second deck)" } else { "" });
+    }
+    Ok(())
 }

@@ -16,8 +16,11 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `xml` | `rekordbox.xml`: Modell, Writer (Attributreihenfolge, Zahlenformate, Original-Layout), Reader (Toleranz- und Validierungsregeln), Location-URL, Escaping, Beatgrid-Export-Modi 0/1/2 und Import-Expansion, Cue-Nummern, Hot-Cue-Palette | §5e |
 | `midi` | MIDI-Mapping-CSV (`MidiMappings/*.midi.csv`): Loader-Regeln, Optionen, Typ-Codes inkl. Pad-Auflösung je Gerät, Nachrichten je Deck (Hex/Kanal, `Dual`), Writer | §5f |
 | `pad` | Performance-Pad-Dateien (`pad/*.pad.csv`): Zeilenformat, Benutzervarianten, Modusliste | §5g |
+| `midi_input` | Verarbeitung eingehender MIDI-Nachrichten je Steuerelement-Typ (Button, Pads, Jog, Rotary mit Beschleunigung, KnobSlider/Value-Skalierung, 14-Bit MSB/LSB) | §5f-2 |
+| `midi_device` | WinMM-Zugriff (Windows): MIDI-Geräte auflisten, Eingang öffnen | §5f-2 |
 | `devicesql` | DeviceSQL-String-Kodierung (kurz ASCII / lang UTF-16 mit Markern) und `.edb`-Container | §5h |
-| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `pad`, `edb` | – |
+| `djlink` | Pro DJ Link: Kopfformate, Port 50000 (Discovery, ID-Anfragen, Keep-alive, Disconnect), Beat (50001), CDJ- und Mixer-Status (50002), Gerätetabelle mit Zwei-Deck-Regel | §5i |
+| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `midi-route`, `midi-decode`, `midi-devices`, `midi-monitor`, `pad`, `edb`, `djlink-listen` | – |
 
 ## Bauen und testen
 
@@ -27,8 +30,9 @@ Voraussetzung: Rust (stable, getestet mit 1.99.1).
 cargo test
 ```
 
-57 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
-25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 5 für Pad-Dateien, 4 für DeviceSQL.
+77 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
+25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 9 für die MIDI-Eingangsverarbeitung, 5 für Pad-Dateien,
+4 für DeviceSQL, 10 für DJ Link, 1 Doku-Test.
 
 ## CLI
 
@@ -45,6 +49,25 @@ cargo run --release --bin rbf -- check "%APPDATA%\Pioneer\rekordbox\share\PIONEE
 | `rbf midi <datei\|ordner>` | MIDI-Mappings parsen, Zuordnungen je Deck berechnen, Round-Trip prüfen |
 | `rbf pad <ordner>` | Pad-Ordner prüfen (Version, Modi, alle Pad-Dateien, Round-Trip) |
 | `rbf edb <datei>` | DeviceSQL-`.edb`-Datei lesen, Zeilen nach Tabelle gruppieren, Strings dekodieren |
+| `rbf midi-route <mapping>` | Eingangsnachrichten eines Mappings je Typ zählen, Zeilen ohne Eingangsverarbeitung nennen |
+| `rbf midi-decode <mapping> <hex>…` | MIDI-Bytes offline verarbeiten, z. B. `B0 22 41 95 00 7F` |
+| `rbf midi-devices` | MIDI-Ein-/Ausgänge auflisten (Windows) |
+| `rbf midi-monitor <mapping> [gerät] [s]` | Live-MIDI eines Controllers mit einem Mapping dekodieren (Windows) |
+| `rbf djlink-listen [s] [--raw]` | DJ-Link-Verkehr auf UDP 50000–50002 nur mithören und dekodieren, Gerätetabelle ausgeben |
+
+### Pioneer DJ XDJ-RX3
+
+- **MIDI** (USB, Modus „PC/Mac (MIDI)“ am Gerät): `rbf midi-route` lädt das mitgelieferte
+  `MidiMappings/XDJ-RX3.midi.csv` mit 730 Eingangsnachrichten (u. a. 116 Pad-, 82 Button-, 15 KnobSlider-Zeilen);
+  nur die Gerätewerte `JogRatency` und `MidiOutInterval` (Typ `Parameter`) haben keine Eingangsverarbeitung.
+  Live-Test, sobald das Gerät angeschlossen ist:
+  `rbf midi-monitor "C:\Program Filesekordboxekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"`
+  (das Eingangsgerät wird über den Namen „XDJ-RX3“ gesucht).
+- **DJ Link** (LAN): `rbf djlink-listen 60 --raw > xdj.txt` zeichnet auf, was das Gerät sendet; damit lassen sich
+  SPEC U28–U30 (Gerätenummer, Ladeinfo, Zustandsnamen) bestätigen. rekordbox selbst sollte dabei geschlossen sein
+  (Ports 50000–50002), Windows fragt beim ersten Start ggf. nach einer Firewall-Freigabe.
+- Nicht geprüft: Beim Bau war kein XDJ-RX3 angeschlossen (`rbf midi-devices` zeigte nur den Windows-Synthesizer);
+  alles oben ist aus dem Dekompilat und mit synthetischen Paketen getestet.
 
 **Validierung gegen eine echte Bibliothek** (lokal, 2026-10-16; Ausgabe in `analysis/check_report.txt`):
 7307 Dateien (1831 DAT, 1827 EXT, 1826 2EX, 1823 3EX), **0 Fehler** – alle 5484 Container byte-identisch
@@ -63,6 +86,11 @@ Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round
   `PMAI`-Felder, `PCPT`-Felder `@1E` und `@28…@34`, `PQT2`-Nutzdaten, `PSSI u16[5..8]`, `PWV4`-Einträge, Farbsemantik
   von `PWV5 c0..c2` (SPEC §7).
 - `PCO2`, `PWVC`, `PKEY`, `PVDI` werden roh durchgereicht; die PVDI-Verschleierung wird bewusst nicht nachgebaut.
+- **MIDI**: Toggle, Parameter, JogRotateAbsPos und JogTimestamp haben keine Eingangsverarbeitung; die
+  Tempo-Polynomkurve des DDJ-SX2 (Typ 8 auf `B?04`) ist nicht nachgebaut; System-Exclusive wird nicht empfangen.
+- **DJ Link**: nur Pakete lesen/bauen und die Gerätetabelle; der ID-Vergabe-Ablauf als Teilnehmer (Discovery →
+  IdUse → IdSet → Keep-alive mit Zeitgebern) ist spezifiziert, aber nicht als laufender Dienst umgesetzt. Weitere
+  Status-Pakettypen (z. B. 0x05, 0x33, 0x56) werden erkannt, aber nicht dekodiert.
 
 ## Bewusst nicht nachgebaut
 
@@ -70,6 +98,7 @@ Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round
 - Entschlüsselung von `master.db` / `product.db` – kein Schlüssel wird extrahiert oder eingebettet.
 - Cloud-/Account-Dienste und deren Protokolle.
 - Audio-Engine, DSP, UI, ML-Modelle (Beat-/Cue-Erkennung, Stem-Separation).
+- NFS-Dateifreigabe für DJ-Link-Geräte (`PSvNFSd.exe`, `NFSDaemon.dll`) und die Mobilgeräte-/Track-Übertragung.
 - `export.pdb` (Geräte-Datenbank): Engine, Strings und Zeilen sind belegt, das Seitenformat noch nicht – dafür wird ein
   USB-/Ordner-Export als Testdatei benötigt (SPEC U23).
 
@@ -79,6 +108,7 @@ Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round
 SPEC.md                    Verhaltensspezifikation mit Belegen (REA-Evidence, Ghidra-Adressen, Beobachtungen)
 src/anlz/                  ANLZ-Implementierung
 src/xml/                   rekordbox.xml-Implementierung
+src/midi*.rs, src/djlink.rs  MIDI-Mappings, MIDI-Eingang, DJ Link
 src/bin/rbf.rs             CLI
 tests/                     Tests mit synthetischen Daten
 analysis/scripts/          Auswerteskripte für die Black-Box-Beobachtung (Python)

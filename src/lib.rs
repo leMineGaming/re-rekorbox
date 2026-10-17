@@ -7,11 +7,13 @@
 //!   and the MessagePack based `.3EX` embedding file.
 //! * [`xml`] – the `rekordbox.xml` library exchange format (model, writer, reader).
 //! * [`midi`] – MIDI controller mapping CSV files (`MidiMappings/*.midi.csv`).
+//! * [`djlink`] – Pro DJ Link packets (announce/keep-alive, beat, status) and device table (§5i).
 //! * [`midi_input`] – processing of incoming MIDI messages per control type (§5f-2).
 //! * [`pad`] – performance pad definitions (`pad/*.pad.csv`).
 
 pub mod anlz;
 pub mod devicesql;
+pub mod djlink;
 pub mod midi;
 pub mod midi_input;
 #[cfg(windows)]
