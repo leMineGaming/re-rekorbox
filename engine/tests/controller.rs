@@ -35,7 +35,17 @@ CFXParameterCH2,CFXParameterCH2,KnobSlider,B40A,,,,,,,,,,Fast,\n\
 CFXSubParameter,CFXSubParameter,KnobSlider,B46C,,,,,,,,,,Fast,\n\
 CFX6On,CFX1On,Button,B457,,,,,B457,,,,,RO;Fast,CFX FILTER\n\
 CFX1On,CFX2On,Button,B469,,,,,B469,,,,,RO;Fast,CFX SPACE\n\
-FX1-1On,FX1-1On,Button,B472,,,,,B472,,,,,,beat fx (later)\n\
+FX1-1On,FX1-1On,Button,B472,,,,,B472,,,,,,beat fx on\n\
+FX1-1Select,FX1-1On+Shift,Button,B434,,,,,B434,,,,,,\n\
+FX1-1,FX1-1,KnobSlider,B45B,,,,,,,,,,,\n\
+FX1BeatUp,FX1BeatUp,Button,B44D,,,,,,,,,,,\n\
+FX1TapBeat,FX1Tap,Button,B44E,,,,,B44E,,,,,,\n\
+FX1AutoBeat,FX1Tap+Shift,Button,B47E,,,,,B47E,,,,,,\n\
+FX1AdjustTime,FX1ReleaseFx,Rotary,B42D,,,,,,,,,,,\n\
+FX1-1Select.ECHO,ECHO,Button,B437,,,,,,,,,,,\n\
+FX1Assign.CH1,,Button,B427,,,,,,,,,,,\n\
+PAD1_PadFx1,PAD1.PadFx1,Pad,9020,5,6,7,8,9020,5,6,7,8,Fast,\n\
+PAD9_PadFx2,,Pad,9068,5,6,7,8,9068,5,6,7,8,Fast,\n\
 PAD1_HotCue,PAD1.HotCue.Call,Pad,9000,5,6,7,8,9000,5,6,7,8,Fast,\n\
 PAD2_HotCue,PAD2.HotCue.Call,Pad,9001,5,6,7,8,9001,5,6,7,8,Fast,\n\
 PAD1_HotCue+Shift,PAD1.HotCue.Delete,Pad,9008,5,6,7,8,9008,5,6,7,8,Fast,\n\
@@ -219,4 +229,32 @@ fn sound_color_fx() {
     let leds = r.ctl.leds(&r.mixer.state());
     let led = |d1: u8| leds.iter().find(|l| l.status == 0xB4 && l.data1 == d1).map(|l| l.value);
     assert_eq!((led(0x57), led(0x69)), (Some(0x7F), Some(0)), "CFX button LEDs");
+}
+
+#[test]
+fn beat_fx_section_and_pad_fx() {
+    use rbx_engine::fx::{BeatFxKind, FxAssign};
+    let mut r = Rig::new();
+    assert_eq!(r.midi(&[0xB4, 0x37, 0x7F]), ["BeatFxSelect(Echo)"]);
+    assert_eq!(r.midi(&[0xB4, 0x34, 0x7F]), ["BeatFxSelect(PingPong)"], "shift + on cycles the type");
+    assert_eq!(r.midi(&[0xB4, 0x72, 0x7F]), ["BeatFxOn(true)"]);
+    assert_eq!(r.midi(&[0xB4, 0x5B, 0x7F]), ["BeatFxDepth(1.0)"]);
+    assert_eq!(r.midi(&[0xB4, 0x4D, 0x7F]), ["BeatFxBeat(1)"]);
+    assert_eq!(r.midi(&[0xB4, 0x27, 0x7F]), ["BeatFxAssign(Channel(0))"], "row without function uses its name");
+    assert_eq!(r.midi(&[0xB4, 0x2D, 0x02]), ["BeatFxAdjust(2.0)"], "adjust time rotary");
+    // tap at 0.5 s intervals = 120 BPM
+    for t in [1.0, 1.5] {
+        r.ctl.handle(&MidiMessage::from_bytes(&[0xB4, 0x4E, 0x7F], t).unwrap()).into_iter().for_each(|c| r.mixer.apply(c));
+    }
+    let s = r.mixer.state().beat_fx;
+    assert_eq!((s.on, s.kind, s.assign, s.bpm, s.auto_bpm), (true, BeatFxKind::PingPong, FxAssign::Channel(0), 120.0, false));
+    let leds = r.ctl.leds(&r.mixer.state());
+    let led = |d1: u8| leds.iter().find(|l| l.status == 0xB4 && l.data1 == d1).map(|l| l.value);
+    assert_eq!((led(0x72), led(0x4E), led(0x7E)), (Some(0x7F), Some(0x7F), Some(0)), "on, tap, auto LEDs");
+    assert_eq!(r.midi(&[0xB4, 0x7E, 0x7F]), ["BeatFxBpm(None)"], "shift + tap = auto beat");
+    // pad FX: bank 1 slot 1 on deck 1, bank 2 slot 9 (named PAD9_PadFx2) on deck 2
+    assert_eq!(r.midi(&[0x95, 0x20, 0x7F]), ["PadFx(0, Some((0, 0)))"]);
+    assert_eq!(r.ctl.leds(&r.mixer.state()).iter().find(|l| l.status == 0x95 && l.data1 == 0x20).map(|l| l.value), Some(0x7F));
+    assert_eq!(r.midi(&[0x95, 0x20, 0x00]), ["PadFx(0, None)"]);
+    assert_eq!(r.midi(&[0x96, 0x68, 0x7F]), ["PadFx(1, Some((1, 8)))"]);
 }

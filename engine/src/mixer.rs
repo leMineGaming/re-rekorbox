@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::deck::{Deck, DeckState, Grid};
 use crate::dsp::{ColorFx, ColorProcessor, Eq3, Smooth};
+use crate::fx::{BeatFx, BeatFxKind, FxAssign, PAD_FX};
 use crate::pcm::{Frame, Pcm};
 
 /// Number of decks.
@@ -56,6 +57,19 @@ pub enum Command {
     ColorFxSelect(Option<ColorFx>),
     /// Shared Color FX sub-parameter 0..1.
     ColorSub(f32),
+    BeatFxOn(bool),
+    BeatFxSelect(BeatFxKind),
+    /// Beat FX knob 0..1.
+    BeatFxDepth(f32),
+    /// Move the beat fraction up (+1) or down (−1).
+    BeatFxBeat(i32),
+    /// Add milliseconds to the effect time (ADJUST TIME).
+    BeatFxAdjust(f32),
+    BeatFxAssign(FxAssign),
+    /// Tapped tempo, or `None` for automatic tempo from the decks.
+    BeatFxBpm(Option<f64>),
+    /// Pad FX of a deck: bank (0/1) and slot (0..15) while held, `None` on release.
+    PadFx(usize, Option<(usize, usize)>),
     /// Crossfader −1 (deck 1) .. 1 (deck 2).
     Crossfader(f32),
     MasterGain(f32),
@@ -75,7 +89,10 @@ impl Command {
             JogTouch(d, _) | Quantize(d, _) => Some(*d),
             Jog(d, _) => Some(*d),
             Volume(d, _) | Trim(d, _) | ColorKnob(d, _) | Eq(d, _, _) => Some(*d),
+            PadFx(d, _) => Some(*d),
             ColorFxSelect(_) | ColorSub(_) | Crossfader(_) | MasterGain(_) => None,
+            BeatFxOn(_) | BeatFxSelect(_) | BeatFxDepth(_) | BeatFxBeat(_) | BeatFxAdjust(_) | BeatFxAssign(_)
+            | BeatFxBpm(_) => None,
         }
     }
 }
@@ -91,6 +108,28 @@ pub struct MixerState {
     pub channel_peak: [f32; DECKS],
     pub color_fx: Option<ColorFx>,
     pub eq: [[f32; 3]; DECKS],
+    pub beat_fx: BeatFxState,
+    /// Pad FX held per deck (bank, slot).
+    pub pad_fx: [Option<(usize, usize)>; DECKS],
+}
+
+/// Beat FX section for display / LEDs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BeatFxState {
+    pub on: bool,
+    pub kind: BeatFxKind,
+    pub beats: f64,
+    pub assign: FxAssign,
+    /// Tempo the effect runs at.
+    pub bpm: f64,
+    /// True when the tempo comes from the decks (not tapped).
+    pub auto_bpm: bool,
+}
+
+impl Default for BeatFxState {
+    fn default() -> Self {
+        BeatFxState { on: false, kind: BeatFxKind::Delay, beats: 1.0, assign: FxAssign::Master, bpm: 120.0, auto_bpm: true }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +142,10 @@ pub struct Mixer {
     peak: f32,
     color_fx: Option<ColorFx>,
     color_sub: f32,
+    beat_fx: BeatFx,
+    fx_assign: FxAssign,
+    fx_bpm: Option<f64>,
+    pad_fx: [Option<(usize, usize)>; DECKS],
     scratch: Vec<Frame>,
 }
 
@@ -114,6 +157,7 @@ struct Channel {
     color_knob: f32,
     gain: Smooth,
     peak: f32,
+    pad_fx: BeatFx,
 }
 
 impl Channel {
@@ -124,6 +168,7 @@ impl Channel {
             color_knob: 0.5,
             gain: Smooth::new(1.0, 0.005, sample_rate),
             peak: 0.0,
+            pad_fx: BeatFx::new(sample_rate, BeatFxKind::Roll),
         }
     }
 }
@@ -145,6 +190,10 @@ impl Mixer {
             peak: 0.0,
             color_fx: None,
             color_sub: 0.5,
+            beat_fx: BeatFx::new(sample_rate, BeatFxKind::Delay),
+            fx_assign: FxAssign::Master,
+            fx_bpm: None,
+            pad_fx: [None; DECKS],
             scratch: Vec::new(),
         }
     }
@@ -157,6 +206,15 @@ impl Mixer {
             channel_peak: [self.channels[0].peak, self.channels[1].peak],
             color_fx: self.color_fx,
             eq: [self.channels[0].eq.knobs, self.channels[1].eq.knobs],
+            beat_fx: BeatFxState {
+                on: self.beat_fx.on,
+                kind: self.beat_fx.kind,
+                beats: self.beat_fx.beats(),
+                assign: self.fx_assign,
+                bpm: self.fx_tempo(),
+                auto_bpm: self.fx_bpm.is_none(),
+            },
+            pad_fx: self.pad_fx,
         }
     }
 
@@ -209,9 +267,70 @@ impl Mixer {
                 self.color_fx = fx;
             }
             ColorSub(v) => self.color_sub = v.clamp(0.0, 1.0),
+            BeatFxOn(on) => self.beat_fx.on = on,
+            BeatFxSelect(k) => {
+                if k != self.beat_fx.kind {
+                    self.beat_fx.reset();
+                    self.beat_fx.kind = k;
+                }
+            }
+            BeatFxDepth(v) => self.beat_fx.depth = v.clamp(0.0, 1.0),
+            BeatFxBeat(step) => {
+                let i = self.beat_fx.beat_index as i32 + step;
+                self.beat_fx.beat_index = i.clamp(0, crate::fx::BEATS.len() as i32 - 1) as usize;
+            }
+            BeatFxAdjust(ms) => self.beat_fx.adjust_ms = (self.beat_fx.adjust_ms + ms).clamp(-500.0, 2000.0),
+            BeatFxAssign(a) => {
+                if a != self.fx_assign {
+                    self.beat_fx.reset();
+                }
+                self.fx_assign = a;
+            }
+            BeatFxBpm(b) => self.fx_bpm = b.filter(|b| *b > 20.0 && *b < 400.0),
+            PadFx(d, held) => {
+                let fx = &mut self.channels[d].pad_fx;
+                match held.and_then(|(bank, slot)| PAD_FX.get(bank).and_then(|b| b.get(slot))) {
+                    Some(preset) => {
+                        if fx.kind != preset.kind {
+                            fx.reset();
+                        }
+                        fx.kind = preset.kind;
+                        fx.beat_index = preset.beat_index;
+                        fx.depth = preset.depth;
+                        fx.on = true;
+                        self.pad_fx[d] = held;
+                    }
+                    None => {
+                        fx.on = false;
+                        self.pad_fx[d] = None;
+                    }
+                }
+            }
             Crossfader(x) => self.crossfader = x.clamp(-1.0, 1.0),
             MasterGain(g) => self.master = g.clamp(0.0, 2.0),
         }
+    }
+
+    /// Tempo for the Beat FX: tapped, else the assigned deck, else the loudest playing deck, else 120.
+    pub fn fx_tempo(&self) -> f64 {
+        if let Some(b) = self.fx_bpm {
+            return b;
+        }
+        if let FxAssign::Channel(c) = self.fx_assign {
+            if let Some(b) = self.decks.get(c).and_then(|d| d.bpm()) {
+                return b;
+            }
+        }
+        self.master_deck().and_then(|d| self.decks[d].bpm()).unwrap_or(120.0)
+    }
+
+    /// The playing deck that is loudest in the mix (fader × crossfader), if any.
+    pub fn master_deck(&self) -> Option<usize> {
+        let (g1, g2) = crossfader_gains(self.crossfader);
+        let xf = [g1, g2];
+        (0..DECKS)
+            .filter(|&d| self.decks[d].is_playing())
+            .max_by(|&a, &b| (self.decks[a].volume * xf[a]).total_cmp(&(self.decks[b].volume * xf[b])))
     }
 
     /// Match the tempo of `deck` to the other deck and, if both are playing, align the beat phase
@@ -245,6 +364,8 @@ impl Mixer {
         let xf = [g1, g2];
         let mut buf = std::mem::take(&mut self.scratch);
         buf.resize(out.len(), [0.0; 2]);
+        let fx_bpm = self.fx_tempo();
+        let deck_bpm: [f64; DECKS] = std::array::from_fn(|d| self.decks[d].bpm().unwrap_or(120.0));
         for (i, (deck, ch)) in self.decks.iter_mut().zip(self.channels.iter_mut()).enumerate() {
             buf.fill([0.0; 2]);
             deck.render(&mut buf, self.sample_rate, 1.0);
@@ -259,6 +380,12 @@ impl Mixer {
                     x = ch.eq.process(x);
                 }
                 x = ch.color.process(self.color_fx, ch.color_knob, self.color_sub, x);
+                if ch.pad_fx.active() {
+                    x = ch.pad_fx.process(x, deck_bpm[i]);
+                }
+                if self.fx_assign == FxAssign::Channel(i) {
+                    x = self.beat_fx.process(x, fx_bpm);
+                }
                 let g = ch.gain.next(target);
                 let y = [x[0] * g, x[1] * g];
                 peak = peak.max(y[0].abs()).max(y[1].abs());
@@ -268,6 +395,11 @@ impl Mixer {
             ch.peak = peak;
         }
         self.scratch = buf;
+        if self.fx_assign == FxAssign::Master {
+            for o in out.iter_mut() {
+                *o = self.beat_fx.process(*o, fx_bpm);
+            }
+        }
         let mut peak = 0.0f32;
         for o in out.iter_mut() {
             for s in o.iter_mut() {

@@ -2,6 +2,7 @@
 
 pub mod deck;
 pub mod dsp;
+pub mod fx;
 pub mod control;
 pub mod controller;
 pub mod mixer;

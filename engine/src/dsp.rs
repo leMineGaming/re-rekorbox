@@ -458,3 +458,44 @@ impl ColorProcessor {
         self.reverb.clear();
     }
 }
+
+/// Granular pitch shifter (two crossfaded read heads on a delay line). `ratio` > 1 raises the
+/// pitch; tempo is unchanged. Latency ≈ half a window.
+#[derive(Debug, Clone)]
+pub struct PitchShifter {
+    line: DelayLine,
+    window: f32,
+    phase: f32,
+}
+
+impl PitchShifter {
+    pub fn new(sample_rate: u32) -> PitchShifter {
+        let window = sample_rate as f32 * 0.06;
+        PitchShifter { line: DelayLine::new(window as usize * 3), window, phase: 0.0 }
+    }
+
+    pub fn process(&mut self, x: Frame, ratio: f32) -> Frame {
+        self.line.write(x);
+        if (ratio - 1.0).abs() < 1e-4 {
+            self.phase = 0.0;
+            return self.line.read(1.0);
+        }
+        // the delay changes by (1 - ratio) per sample; phase runs through one window
+        self.phase = (self.phase + (1.0 - ratio) / self.window).rem_euclid(1.0);
+        let mut out = [0.0; 2];
+        for off in [0.0f32, 0.5] {
+            let p = (self.phase + off).rem_euclid(1.0);
+            let delay = 2.0 + p * self.window;
+            let gain = 1.0 - (2.0 * p - 1.0).abs(); // triangle, heads sum to 1
+            let s = self.line.read(delay);
+            out[0] += s[0] * gain;
+            out[1] += s[1] * gain;
+        }
+        out
+    }
+
+    pub fn reset(&mut self) {
+        self.line.clear();
+        self.phase = 0.0;
+    }
+}

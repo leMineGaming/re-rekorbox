@@ -17,6 +17,7 @@ use rekordbox_formats::midi_input::{Action, InputProcessor, MidiMessage};
 
 use crate::deck::{HOT_CUES, TEMPO_RANGES};
 use crate::dsp::ColorFx;
+use crate::fx::{BeatFxKind, FxAssign, TapTempo};
 use crate::mixer::{Command, MixerState, DECKS};
 
 /// Tunables that the mapping file does not define.
@@ -76,12 +77,38 @@ pub enum Target {
     ColorKnob(usize),
     ColorSub,
     ColorSelect(ColorFx),
+    BeatFxOn,
+    BeatFxNext,
+    BeatFxSelect(BeatFxKind),
+    BeatFxDepth,
+    BeatFxBeat(i32),
+    BeatFxTap,
+    BeatFxAuto,
+    BeatFxAdjust(f32),
+    BeatFxAssign(FxAssign),
+    /// Pad FX bank (0/1) and slot (0..15).
+    PadFx(usize, usize),
 }
 
 impl Target {
     /// Targets that are not tied to a deck column (mixer section).
     pub fn is_global(&self) -> bool {
-        matches!(self, Target::CrossFader | Target::ColorKnob(_) | Target::ColorSub | Target::ColorSelect(_))
+        matches!(
+            self,
+            Target::CrossFader
+                | Target::ColorKnob(_)
+                | Target::ColorSub
+                | Target::ColorSelect(_)
+                | Target::BeatFxOn
+                | Target::BeatFxNext
+                | Target::BeatFxSelect(_)
+                | Target::BeatFxDepth
+                | Target::BeatFxBeat(_)
+                | Target::BeatFxTap
+                | Target::BeatFxAuto
+                | Target::BeatFxAdjust(_)
+                | Target::BeatFxAssign(_)
+        )
     }
 }
 
@@ -122,6 +149,22 @@ pub fn target_of(function: &str) -> Option<Target> {
         "CFX4On" => ColorSelect(ColorFx::Sweep),
         "CFX5On" => ColorSelect(ColorFx::Noise),
         "CFX6On" => ColorSelect(ColorFx::Crush),
+        "FX1-1On" => BeatFxOn,
+        "FX1-1On+Shift" => BeatFxNext,
+        "FX1-1" => BeatFxDepth,
+        "FX1BeatDown" => BeatFxBeat(-1),
+        "FX1BeatUp" => BeatFxBeat(1),
+        "FX1Tap" => BeatFxTap,
+        "FX1Tap+Shift" => BeatFxAuto,
+        "FX1ReleaseFx" => BeatFxAdjust(1.0),
+        "FX1ReleaseFx+Shift" => BeatFxAdjust(10.0),
+        "FX1Assign.CH1" => BeatFxAssign(FxAssign::Channel(0)),
+        "FX1Assign.CH2" => BeatFxAssign(FxAssign::Channel(1)),
+        "FX1Assign.CH3" => BeatFxAssign(FxAssign::Channel(2)),
+        "FX1Assign.CH4" => BeatFxAssign(FxAssign::Channel(3)),
+        "FX1Assign.MASTER" => BeatFxAssign(FxAssign::Master),
+        "FX1Assign.SAMPLER" => BeatFxAssign(FxAssign::Sampler),
+        f if BeatFxKind::from_name(f).is_some() => BeatFxSelect(BeatFxKind::from_name(f)?),
         f if f.starts_with("CFXParameterCH") => {
             let n: usize = f["CFXParameterCH".len()..].parse().ok()?;
             ColorKnob(n.checked_sub(1)?)
@@ -137,6 +180,10 @@ pub fn target_of(function: &str) -> Option<Target> {
                 BeatLoopPad(n - 5)
             } else if (f.ends_with(".BeatJump") || f.ends_with("_BeatJump+Shift")) && (1..=8).contains(&n) {
                 BeatJumpPad(n - 1)
+            } else if (f.ends_with(".PadFx1") || f.ends_with("_PadFx1")) && (1..=16).contains(&n) {
+                PadFx(0, n - 1)
+            } else if (f.ends_with(".PadFx2") || f.ends_with("_PadFx2")) && (1..=16).contains(&n) {
+                PadFx(1, n - 1)
             } else {
                 return None;
             }
@@ -185,6 +232,11 @@ pub struct Controller {
     proc: InputProcessor,
     decks: [DeckCtl; DECKS],
     color_fx: Option<ColorFx>,
+    fx_on: bool,
+    fx_kind: BeatFxKind,
+    tap: TapTempo,
+    /// Time of the message being handled (seconds).
+    now: f64,
     pub config: ControllerConfig,
 }
 
@@ -194,6 +246,10 @@ impl Controller {
             proc: InputProcessor::new(mapping),
             decks: Default::default(),
             color_fx: None,
+            fx_on: false,
+            fx_kind: BeatFxKind::Delay,
+            tap: TapTempo::default(),
+            now: 0.0,
             config: ControllerConfig::default(),
         }
     }
@@ -222,6 +278,7 @@ impl Controller {
 
     /// Process one MIDI message into engine commands.
     pub fn handle(&mut self, msg: &MidiMessage) -> Vec<Command> {
+        self.now = msg.time_s;
         let events = self.proc.process(msg);
         let mut out = Vec::new();
         for ev in events {
@@ -300,6 +357,32 @@ impl Controller {
             (Target::Eq(band), _, Some(v)) => vec![C::Eq(d, band, v as f32)],
             (Target::ColorKnob(_), _, Some(v)) => vec![C::ColorKnob(d, v as f32)],
             (Target::ColorSub, _, Some(v)) => vec![C::ColorSub(v as f32)],
+            (Target::BeatFxOn, Some(true), _) => {
+                self.fx_on = !self.fx_on;
+                vec![C::BeatFxOn(self.fx_on)]
+            }
+            (Target::BeatFxNext, Some(true), _) => {
+                self.fx_kind = self.fx_kind.next();
+                vec![C::BeatFxSelect(self.fx_kind)]
+            }
+            (Target::BeatFxSelect(k), Some(true), _) => {
+                self.fx_kind = k;
+                vec![C::BeatFxSelect(k)]
+            }
+            (Target::BeatFxDepth, _, Some(v)) => vec![C::BeatFxDepth(v as f32)],
+            (Target::BeatFxBeat(step), Some(true), _) => vec![C::BeatFxBeat(step)],
+            (Target::BeatFxTap, Some(true), _) => match self.tap.tap(self.now) {
+                Some(bpm) => vec![C::BeatFxBpm(Some(bpm))],
+                None => vec![],
+            },
+            (Target::BeatFxAuto, Some(true), _) => vec![C::BeatFxBpm(None)],
+            (Target::BeatFxAdjust(ms), _, _) => match action {
+                Action::Relative { delta } => vec![C::BeatFxAdjust(delta as f32 * ms)],
+                _ => vec![],
+            },
+            (Target::BeatFxAssign(a), Some(true), _) => vec![C::BeatFxAssign(a)],
+            (Target::PadFx(bank, slot), Some(true), _) => vec![C::PadFx(d, Some((bank, slot)))],
+            (Target::PadFx(_, _), Some(false), _) => vec![C::PadFx(d, None)],
             (Target::ColorSelect(fx), Some(true), _) => {
                 self.color_fx = if self.color_fx == Some(fx) { None } else { Some(fx) };
                 vec![C::ColorFxSelect(self.color_fx)]
@@ -336,8 +419,14 @@ impl Controller {
                 if b.message == 0xFFFF {
                     continue;
                 }
-                if let Target::ColorSelect(fx) = t {
-                    let on = s.color_fx == Some(fx);
+                let global_on = match t {
+                    Target::ColorSelect(fx) => Some(s.color_fx == Some(fx)),
+                    Target::BeatFxOn => Some(s.beat_fx.on),
+                    Target::BeatFxTap => Some(!s.beat_fx.auto_bpm),
+                    Target::BeatFxAuto => Some(s.beat_fx.auto_bpm),
+                    _ => None,
+                };
+                if let Some(on) = global_on {
                     out.push(Led { status: (b.message >> 8) as u8, data1: b.message as u8, value: if on { 0x7F } else { 0 } });
                     continue;
                 }
@@ -355,6 +444,7 @@ impl Controller {
                     Target::Sync => matches!((st.bpm, other.bpm), (Some(a), Some(b)) if (a - b).abs() < 0.01),
                     Target::Quantize => self.decks[d].quantize,
                     Target::Vinyl => self.decks[d].vinyl,
+                    Target::PadFx(bank, slot) => s.pad_fx[d] == Some((bank, slot)),
                     _ => continue,
                 };
                 out.push(Led { status: (b.message >> 8) as u8, data1: b.message as u8, value: if on { 0x7F } else { 0 } });
