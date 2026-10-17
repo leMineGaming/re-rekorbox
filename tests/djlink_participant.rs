@@ -184,3 +184,30 @@ fn two_participants_on_one_network_get_different_numbers() {
     assert_eq!(b.number(), Some(0x12));
     assert!(a.devices().get(0x12).is_some() && b.devices().get(0x11).is_some(), "they see each other");
 }
+
+#[test]
+fn interface_choice_and_broadcast() {
+    use rekordbox_formats::netif::{choose, Interface};
+    let iface = |name: &str, ip: [u8; 4], prefix: u8, up: bool, lo: bool| Interface {
+        name: name.into(),
+        description: String::new(),
+        ip: Ipv4Addr::from(ip),
+        prefix_len: prefix,
+        mac: [0; 6],
+        up,
+        loopback: lo,
+    };
+    let list = vec![
+        iface("Loopback", [127, 0, 0, 1], 8, true, true),
+        iface("Ethernet", [169, 254, 10, 20], 16, true, false),
+        iface("WLAN", [192, 168, 2, 229], 24, true, false),
+        iface("Down", [10, 0, 0, 1], 8, false, false),
+    ];
+    assert_eq!(choose(&list, None).unwrap().name, "WLAN", "private first");
+    assert_eq!(choose(&list[..2], None).unwrap().name, "Ethernet", "then link-local (direct cable)");
+    assert_eq!(choose(&list, Some("ether")).unwrap().ip, Ipv4Addr::new(169, 254, 10, 20));
+    assert_eq!(choose(&list, Some("10.0.0.1")).unwrap().name, "Down", "explicit choice wins");
+    assert_eq!(list[2].broadcast(), Ipv4Addr::new(192, 168, 2, 255));
+    assert_eq!(list[1].netmask(), Ipv4Addr::new(255, 255, 0, 0));
+    assert_eq!(list[1].broadcast(), Ipv4Addr::new(169, 254, 255, 255));
+}

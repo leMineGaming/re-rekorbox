@@ -14,9 +14,11 @@
 pub mod anlz;
 pub mod devicesql;
 pub mod djlink;
+pub mod djlink_net;
 pub mod djlink_participant;
 pub mod midi;
 pub mod midi_input;
+pub mod netif;
 #[cfg(windows)]
 pub mod midi_device;
 pub mod pad;
