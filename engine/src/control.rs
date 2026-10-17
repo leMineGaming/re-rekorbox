@@ -14,11 +14,15 @@
 //! vol 1 0.8 | trim 1 1.2 | quant 1 on  channel settings
 //! sync 2                               match deck 2 to deck 1
 //! xf -1 | master 0.9                   crossfader −1..1, master gain
+//! eq 1 low 0.2 | eq 2 high 0.5         EQ knob 0..1 (0.5 flat, 0 kill)
+//! cfx filter|space|echo|sweep|noise|crush|off   Sound Color FX type
+//! color 1 0.2 | sub 0.7                Color FX knob of a channel (0.5 off), sub-parameter
 //! ```
 //! A script is `time:command; time:command; …` with times in seconds, e.g.
 //! `0:play 1; 4:bpm 2 124; 4:sync 2; 4:play 2; 8:xf 1`.
 
 use crate::deck::Grid;
+use crate::dsp::ColorFx;
 use crate::mixer::Command;
 
 fn deck(s: Option<&str>) -> Result<usize, String> {
@@ -91,6 +95,27 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "trim" => Trim(deck(a)?, num(b, "trim")?),
         "quant" => Quantize(deck(a)?, matches!(b, Some("on" | "1" | "true"))),
         "sync" => Sync(deck(a)?),
+        "eq" => {
+            let band = match b {
+                Some("low") => 0,
+                Some("mid") => 1,
+                Some("high" | "hi") => 2,
+                _ => return Err("band must be low, mid or high".into()),
+            };
+            Eq(deck(a)?, band, num(c, "EQ value")?)
+        }
+        "cfx" => ColorFxSelect(match a {
+            Some("off") => None,
+            Some("filter") => Some(ColorFx::Filter),
+            Some("space") => Some(ColorFx::Space),
+            Some("echo" | "dubecho") => Some(ColorFx::DubEcho),
+            Some("sweep") => Some(ColorFx::Sweep),
+            Some("noise") => Some(ColorFx::Noise),
+            Some("crush") => Some(ColorFx::Crush),
+            _ => return Err("cfx filter|space|echo|sweep|noise|crush|off".into()),
+        }),
+        "color" => ColorKnob(deck(a)?, num(b, "color knob value")?),
+        "sub" => ColorSub(num(a, "sub-parameter value")?),
         "xf" => Crossfader(num(a, "crossfader value")?),
         "master" => MasterGain(num(a, "master gain")?),
         other => return Err(format!("unknown command {other:?}")),

@@ -29,7 +29,13 @@ NeedleSearch,NeedleSearch,Value,B01C,0,1,2,3,,,,,,Max=16383,\n\
 ChannelFader,ChannelFader,KnobSlider,,B411,B412,B413,B414,,,,,,,\n\
 Gain,Gain,KnobSlider,,B401,B406,B40C,B450,,,,,,Fast,\n\
 CrossFader,CrossFader,KnobSlider,B40B,,,,,,,,,,Fast,\n\
-EQHigh,EQHigh,KnobSlider,,B402,B407,B40E,B451,,,,,,Fast,not in the engine\n\
+EQHigh,EQHigh,KnobSlider,,B402,B407,B40E,B451,,,,,,Fast,\n\
+EQLow,EQLow,KnobSlider,,B404,B409,B410,B452,,,,,,Fast,\n\
+CFXParameterCH2,CFXParameterCH2,KnobSlider,B40A,,,,,,,,,,Fast,\n\
+CFXSubParameter,CFXSubParameter,KnobSlider,B46C,,,,,,,,,,Fast,\n\
+CFX6On,CFX1On,Button,B457,,,,,B457,,,,,RO;Fast,CFX FILTER\n\
+CFX1On,CFX2On,Button,B469,,,,,B469,,,,,RO;Fast,CFX SPACE\n\
+FX1-1On,FX1-1On,Button,B472,,,,,B472,,,,,,beat fx (later)\n\
 PAD1_HotCue,PAD1.HotCue.Call,Pad,9000,5,6,7,8,9000,5,6,7,8,Fast,\n\
 PAD2_HotCue,PAD2.HotCue.Call,Pad,9001,5,6,7,8,9001,5,6,7,8,Fast,\n\
 PAD1_HotCue+Shift,PAD1.HotCue.Delete,Pad,9008,5,6,7,8,9008,5,6,7,8,Fast,\n\
@@ -84,7 +90,8 @@ fn function_classification() {
     assert_eq!(target_of("PAD2.BeatJump"), Some(Target::BeatJumpPad(1)));
     assert_eq!(target_of("PAD9.HotCue.Call"), None, "only 8 hot cues");
     assert_eq!(target_of("JogPitchBend"), None, "same message as JogScratch; the deck decides by touch");
-    assert_eq!(target_of("EQHigh"), None);
+    assert_eq!(target_of("EQHigh"), Some(Target::Eq(2)));
+    assert_eq!(target_of("CFXParameterCH3"), Some(Target::ColorKnob(2)));
 }
 
 #[test]
@@ -92,7 +99,8 @@ fn coverage_lists_handled_and_missing() {
     let r = Rig::new();
     let (yes, no) = r.ctl.coverage();
     assert!(yes.contains("PlayPause") && yes.contains("PAD5_BeatLoop"));
-    assert_eq!(no.into_iter().collect::<Vec<_>>(), ["EQHigh", "JogPitchBend"]);
+    assert!(yes.contains("EQHigh") && yes.contains("CFX1On") && yes.contains("CFXParameterCH2"));
+    assert!(no.contains("JogPitchBend"));
 }
 
 #[test]
@@ -148,7 +156,8 @@ fn faders_and_knobs() {
     assert!((r.mixer.state().crossfader - 1.0).abs() < 1e-6);
     r.midi(&[0xB1, 0x1C, 64]); // needle: middle of deck 2
     assert!((r.pos(1) - 30.0).abs() < 0.1, "{}", r.pos(1));
-    assert!(r.midi(&[0xB4, 0x02, 0x10]).is_empty(), "EQ is not handled");
+    assert_eq!(r.midi(&[0xB4, 0x09, 0x00]), ["Eq(1, 0, 0.0)"], "EQ low of deck 2 (full hex message per deck)");
+    assert_eq!(r.mixer.state().eq[1], [0.0, 0.5, 0.5]);
 }
 
 #[test]
@@ -194,4 +203,20 @@ fn sync_quantize_and_leds() {
     assert_eq!(led(&r, 0x95, 0x00), Some(0));
     let l = r.ctl.leds(&r.mixer.state()).into_iter().find(|l| l.status == 0x95 && l.data1 == 0x01).unwrap();
     assert_eq!(l.packed(), 0x007F_0195);
+}
+
+#[test]
+fn sound_color_fx() {
+    use rbx_engine::dsp::ColorFx;
+    let mut r = Rig::new();
+    assert_eq!(r.midi(&[0xB4, 0x57, 0x7F]), ["ColorFxSelect(Some(Filter))"], "function CFX1On = FILTER");
+    assert_eq!(r.midi(&[0xB4, 0x69, 0x7F]), ["ColorFxSelect(Some(Space))"], "switching type");
+    assert_eq!(r.midi(&[0xB4, 0x69, 0x7F]), ["ColorFxSelect(None)"], "same button again = off");
+    r.midi(&[0xB4, 0x57, 0x7F]);
+    assert_eq!(r.mixer.state().color_fx, Some(ColorFx::Filter));
+    assert_eq!(r.midi(&[0xB4, 0x0A, 0x7F]), ["ColorKnob(1, 1.0)"], "CH2 knob -> deck 2");
+    assert_eq!(r.midi(&[0xB4, 0x6C, 0x7F]), ["ColorSub(1.0)"]);
+    let leds = r.ctl.leds(&r.mixer.state());
+    let led = |d1: u8| leds.iter().find(|l| l.status == 0xB4 && l.data1 == d1).map(|l| l.value);
+    assert_eq!((led(0x57), led(0x69)), (Some(0x7F), Some(0)), "CFX button LEDs");
 }

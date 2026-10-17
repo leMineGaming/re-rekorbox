@@ -16,6 +16,7 @@ use rekordbox_formats::midi::{MappingEntry, MidiMapping};
 use rekordbox_formats::midi_input::{Action, InputProcessor, MidiMessage};
 
 use crate::deck::{HOT_CUES, TEMPO_RANGES};
+use crate::dsp::ColorFx;
 use crate::mixer::{Command, MixerState, DECKS};
 
 /// Tunables that the mapping file does not define.
@@ -69,6 +70,19 @@ pub enum Target {
     ChannelFader,
     Gain,
     CrossFader,
+    /// EQ band 0 = low, 1 = mid, 2 = high.
+    Eq(usize),
+    /// Sound Color FX knob of mixer channel n (0-based).
+    ColorKnob(usize),
+    ColorSub,
+    ColorSelect(ColorFx),
+}
+
+impl Target {
+    /// Targets that are not tied to a deck column (mixer section).
+    pub fn is_global(&self) -> bool {
+        matches!(self, Target::CrossFader | Target::ColorKnob(_) | Target::ColorSub | Target::ColorSelect(_))
+    }
 }
 
 fn pad_number(s: &str) -> Option<usize> {
@@ -97,6 +111,21 @@ pub fn target_of(function: &str) -> Option<Target> {
         "ChannelFader" => ChannelFader,
         "Gain" => Gain,
         "CrossFader" => CrossFader,
+        "EQLow" => Eq(0),
+        "EQMid" => Eq(1),
+        "EQHigh" => Eq(2),
+        "CFXSubParameter" => ColorSub,
+        // function names as in the mapping file (its comments name the effects)
+        "CFX1On" => ColorSelect(ColorFx::Filter),
+        "CFX2On" => ColorSelect(ColorFx::Space),
+        "CFX3On" => ColorSelect(ColorFx::DubEcho),
+        "CFX4On" => ColorSelect(ColorFx::Sweep),
+        "CFX5On" => ColorSelect(ColorFx::Noise),
+        "CFX6On" => ColorSelect(ColorFx::Crush),
+        f if f.starts_with("CFXParameterCH") => {
+            let n: usize = f["CFXParameterCH".len()..].parse().ok()?;
+            ColorKnob(n.checked_sub(1)?)
+        }
         f => {
             let n = pad_number(f)?;
             if f.ends_with(".HotCue.Call") && (1..=HOT_CUES).contains(&n) {
@@ -155,12 +184,18 @@ impl Led {
 pub struct Controller {
     proc: InputProcessor,
     decks: [DeckCtl; DECKS],
+    color_fx: Option<ColorFx>,
     pub config: ControllerConfig,
 }
 
 impl Controller {
     pub fn new(mapping: MidiMapping) -> Controller {
-        Controller { proc: InputProcessor::new(mapping), decks: Default::default(), config: ControllerConfig::default() }
+        Controller {
+            proc: InputProcessor::new(mapping),
+            decks: Default::default(),
+            color_fx: None,
+            config: ControllerConfig::default(),
+        }
     }
 
     pub fn mapping(&self) -> &MidiMapping {
@@ -201,10 +236,11 @@ impl Controller {
     pub fn map(&mut self, function: &str, deck: u8, action: Action) -> Vec<Command> {
         use Command as C;
         let Some(t) = target_of(function) else { return vec![] };
-        let global = matches!(t, Target::CrossFader);
-        let d = match deck {
-            1 | 2 => usize::from(deck - 1),
-            0 if global => 0,
+        let d = match (t, deck) {
+            (Target::ColorKnob(n), _) if n < DECKS => n,
+            (Target::ColorKnob(_), _) => return vec![],
+            (t, _) if t.is_global() => 0,
+            (_, 1 | 2) => usize::from(deck - 1),
             _ => return vec![],
         };
         let ctl = &mut self.decks[d];
@@ -261,6 +297,13 @@ impl Controller {
                 vec![C::Trim(d, 10f32.powf(db / 20.0))]
             }
             (Target::CrossFader, _, Some(v)) => vec![C::Crossfader(v as f32 * 2.0 - 1.0)],
+            (Target::Eq(band), _, Some(v)) => vec![C::Eq(d, band, v as f32)],
+            (Target::ColorKnob(_), _, Some(v)) => vec![C::ColorKnob(d, v as f32)],
+            (Target::ColorSub, _, Some(v)) => vec![C::ColorSub(v as f32)],
+            (Target::ColorSelect(fx), Some(true), _) => {
+                self.color_fx = if self.color_fx == Some(fx) { None } else { Some(fx) };
+                vec![C::ColorFxSelect(self.color_fx)]
+            }
             (Target::JogTouch, _, _) => match action {
                 Action::Touch { touched, .. } if ctl.vinyl => {
                     ctl.touched = touched;
@@ -290,7 +333,15 @@ impl Controller {
         for e in &m.entries {
             let Some(t) = target_of(function_of(e)) else { continue };
             for b in e.output_bindings() {
-                if !(1..=2).contains(&b.deck) || b.message == 0xFFFF {
+                if b.message == 0xFFFF {
+                    continue;
+                }
+                if let Target::ColorSelect(fx) = t {
+                    let on = s.color_fx == Some(fx);
+                    out.push(Led { status: (b.message >> 8) as u8, data1: b.message as u8, value: if on { 0x7F } else { 0 } });
+                    continue;
+                }
+                if !(1..=2).contains(&b.deck) {
                     continue;
                 }
                 let d = usize::from(b.deck - 1);
