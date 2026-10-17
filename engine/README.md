@@ -32,8 +32,8 @@ Quellen statt Dateien: `tone` (440 Hz) und `click:BPM` (Click-Track mit Beatgrid
 ## DJ-Controller (z. B. Pioneer DJ XDJ-RX3)
 
 ```bash
-cargo run --release -p rbx-engine --bin rbx-play -- midi-coverage "C:\Program Filesekordboxekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"
-cargo run --release -p rbx-engine --bin rbx-play -- play track1.flac track2.flac --midi "C:\Program Filesekordboxekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"
+cargo run --release -p rbx-engine --bin rbx-play -- midi-coverage "C:\Program Files\rekordbox\rekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"
+cargo run --release -p rbx-engine --bin rbx-play -- play track1.flac track2.flac --midi "C:\Program Files\rekordbox\rekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"
 ```
 
 MIDI-Ein- und -Ausgang werden über den Gerätenamen aus dem Mapping gefunden (`--midi-in`/`--midi-out NAME`
