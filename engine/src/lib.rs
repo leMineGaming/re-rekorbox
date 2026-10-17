@@ -4,6 +4,7 @@ pub mod deck;
 pub mod dsp;
 pub mod fx;
 pub mod analysis;
+pub mod analyze;
 pub mod browser;
 pub mod control;
 pub mod controller;
