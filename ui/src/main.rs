@@ -73,7 +73,8 @@ fn main() -> eframe::Result {
             .with_title("rekordbox-rs")
             .with_inner_size([1500.0, 950.0])
             .with_min_inner_size([1100.0, 700.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(egui::IconData { rgba: include_bytes!("../assets/icon-64.rgba").to_vec(), width: 64, height: 64 }),
         ..Default::default()
     };
     eframe::run_native(

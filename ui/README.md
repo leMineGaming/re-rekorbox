@@ -9,10 +9,20 @@ rekordbox-Oberfläche.
 cargo run --release -p rbx-ui
 ```
 
-Optionen: `rbx-ui [datei1] [datei2] [--device NAME] [--silent] [--midi MAPPING.csv] [--djlink [ADAPTER]]
-[--anlz DIR] [--music DIR] [--no-library] [--no-analyze] [--samples DIR]`. Mit `--silent` läuft die Engine ohne
-Soundkarte, es ist also nichts zu hören. Wenn kein Audiogerät geöffnet werden kann, startet das Programm ebenfalls
-stumm.
+Optionen: `rbx-ui [datei1] [datei2] [--device NAME] [--buffer FRAMES] [--silent] [--midi MAPPING.csv]
+[--djlink [ADAPTER]] [--anlz DIR] [--music DIR] [--no-library] [--no-analyze] [--samples DIR]`. Mit `--silent`
+läuft die Engine ohne Soundkarte, es ist also nichts zu hören. Wenn das gewählte Audiogerät nicht geöffnet werden
+kann, wird das Standardgerät genommen, sonst läuft es stumm.
+
+Einstellungen aus dem Fenster (Audiogerät, Puffer, Musik-Ordner, Controller-Mapping, DJ Link, Analyse beim Laden,
+Zoom) werden in `%APPDATA%\rekordbox-rs\settings.txt` gespeichert; Kommandozeilen-Optionen gelten nur für den
+jeweiligen Start. Meldungen und jede Minute ein Betriebsprotokoll (Audio-Last, Aussetzer, Deck-Zustand) gehen nach
+`%APPDATA%\rekordbox-rs\logs\rbx-ui.log`, Abstürze nach `logs\crash-rbx-ui.txt`. Fehler (z. B. eine Datei, die
+sich nicht laden lässt) erscheinen 15 s rot in der oberen Leiste.
+
+**Tasten** (nicht während der Eingabe in ein Textfeld): Deck 1 `Z` CUE (halten), `X` PLAY/PAUSE, `C` SYNC,
+`1`–`8` Hot Cues; Deck 2 `B`, `N`, `M`, `Umschalt+1`–`8`; Pfeil links/rechts Crossfader, hoch/runter Track wählen,
+`Enter` lädt in Deck 1 (`Umschalt+Enter` Deck 2).
 
 ## Was es kann
 
@@ -24,7 +34,8 @@ stumm.
 | Mixer | Trim, 3-Band-EQ, COLOR, Kanalfader mit Pegel, Kopfhörer-CUE je Kanal und Master, Master-Pegel, Sampler-Lautstärke, Crossfader mit Kurve |
 | Effekte | Beat FX (14 Effekte, Beat-Raster, Zuweisung CH1/CH2/Master/Sampler, Depth, ON), Sound Color FX (6) |
 | Sampler | 16 Pads (Klick spielt, Rechtsklick stoppt) |
-| Einstellungen | Analyse beim Laden an/aus, Controller-Mapping verbinden (z. B. `XDJ-RX3.midi.csv`), Pro DJ Link beitreten und Decks dem Tempo eines Geräts folgen lassen |
+| Einstellungen | Audiogerät und Puffer (mit Anzeige von Latenz, Last, Aussetzern; „Jetzt neu starten“), Musik-Ordner, Analyse beim Laden an/aus, Controller-Mapping verbinden (z. B. `XDJ-RX3.midi.csv`), Pro DJ Link beitreten und Decks dem Tempo eines Geräts folgen lassen, **Selbsttest** (schnell, vollständig, mit Controller-Eingaben) |
+| Obere Leiste | Master-Pegel, Audio-Last in %, Aussetzer (rot), Bibliotheksstand, Analyse-Fortschritt, Controller und DJ Link, letzte Fehlermeldung |
 
 Drehregler: nach oben/unten ziehen, Doppelklick setzt zurück. Unten stehen die letzten Meldungen (Laden, Analyse,
 Controller, DJ Link).
@@ -34,7 +45,7 @@ Controller, DJ Link).
 `cargo test -p rbx-ui`: steuert das Fenster ohne Bildschirm über AccessKit (egui_kittest), mit stummer Engine und
 synthetischen Klick-Tracks in einem Temp-Ordner. Ablauf: Track in der Liste wählen → in Deck 1 laden →
 automatische Analyse (128 BPM) → PLAY → Hot Cue A → zweiten Track laden → SYNC (Deck 2 auf 128 BPM) → PAUSE;
-außerdem die Suche. Bildschirmfotos landen in `target/ui-shots/`.
+außerdem Suche, Tastaturkürzel und das Speichern der Einstellungen. Bildschirmfotos landen in `target/ui-shots/`.
 `cargo test -p rbx-ui --test ui -- --ignored real_library` macht ein Bild mit der echten Bibliothek dieses
 Rechners (nur lesend).
 
@@ -45,4 +56,3 @@ Controller und DJ Link (siehe Engine-README).
 
 - Die Schriften enthalten nur Latin-1; Bedienelemente sind deshalb beschriftet statt mit Symbolen versehen.
 - Keine Playlists (rekordbox.xml-Import ist in `rekordbox-formats` vorhanden, aber noch nicht angebunden).
-- Tastaturkürzel fehlen.

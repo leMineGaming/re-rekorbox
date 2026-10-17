@@ -115,9 +115,25 @@ werden gefunden. rekordbox darf dabei nicht laufen (gleiche Ports).
 **Nur über Loopback getestet**; Verhalten gegenüber echten Geräten (Annahme der Nummer, Anzeige am XDJ-RX3) ist
 offen (SPEC U28–U31).
 
+## Automatische Audio-Prüfung und Selbsttest
+
+`quality` rendert typische Bedienabläufe offline und vermisst das Ergebnis (statt zuzuhören): Knackser bei
+Start/Stop, CUE, Hot Cue, Loop-Grenzen, Beat Jump, Reverse, Fadern, EQ-Kill, Tempo, Beat/Color FX und Key Lock;
+Tonhöhe mit und ohne Key Lock; Sync-Drift über 3 Minuten; Beat-Abstand; Echo-Zeit; Übersteuerung; Stille;
+Kopfhörer- und Crossfader-Routing; Sampler. Gefundene und behobene Fehler: harte Sprünge bei Loop/Beat
+Jump/Seek (jetzt 4-ms-Überblendung), Knacken beim Einschalten von Key Lock (Überblendung, vorgefüllter
+Pitch-Shifter), EQ-Umgehung bei neutraler Stellung (Phasensprung), Kaltstart des Color-FX-Filters.
+
+```bash
+cargo run --release -p rbx-engine --bin rbx-selftest -- --quick
+```
+
+`rbx-selftest [--quick] [--soak SEKUNDEN] [--tracks N] [--midi-listen SEKUNDEN] [--no-device] [--no-network]
+[--out DIR] [--open] [--pause]` – siehe Haupt-README.
+
 ## Tests
 
-`cargo test -p rbx-engine`: 69 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
+`cargo test -p rbx-engine`: 70 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
 MIDI-Gerät nötig): Decoder, Deck, Loops, Sync, Jog, EQ-Frequenzgang, Color FX, alle 14 Beat FX
 (Zeitpunkt, Gate-Anteil, Tonhöhe, Bremse), Tap-Tempo, Reverse, Slip, Key Lock, Key Shift, Bremse,
 Memory Cues, Auto Cue, Sampler, Cue-Bus, Crossfader-Kurve, Browser, die Controller-Zuordnung samt LEDs und

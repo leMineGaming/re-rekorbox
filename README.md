@@ -51,6 +51,25 @@ cargo test --workspace
 25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 9 für die MIDI-Eingangsverarbeitung, 5 für Pad-Dateien,
 4 für DeviceSQL, 3 für die Bibliothek, 21 für DJ Link (davon 2 über echte UDP-Sockets auf 127.0.0.1), 1 Doku-Test; dazu 61 Tests der Audio-Engine inkl. Effekten und Controller-Anbindung (`engine/`).
 
+## Windows-Paket und Selbsttest
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging/build-windows.ps1
+```
+
+führt die Tests aus und baut `dist/rekordbox-rs-<version>-windows-x64.zip`: alle Programme mit statisch gelinkter
+C-Laufzeit (kein Visual-C++-Paket nötig), Icon, `LIESMICH.txt`, `Installieren.cmd` (Installation für den
+aktuellen Benutzer ohne Adminrechte, mit Startmenü, Desktop-Verknüpfung und Eintrag unter „Apps“) und
+`Selbsttest.cmd`. Das Icon entsteht mit `python packaging/make_icon.py`.
+
+`rbx-selftest` prüft automatisch, was sonst von Hand auszuprobieren wäre, ohne dass etwas zu hören ist:
+Audio-Qualität (offline gerenderte Bedienabläufe: Knackser, Tonhöhe, Sync-Drift, Echo-Timing, Pegel, Routing),
+Soundkarten (nur Stille: Puffer, Latenz, Aussetzer), Leistung, Dauerlauf mit zufälliger Bedienung, Bibliothek
+und Analyse-Genauigkeit gegenüber rekordbox, MIDI-Ports und Mapping, Netzwerk und Pro DJ Link. Der Bericht
+(HTML und Markdown) liegt in `%APPDATA%\rekordbox-rs\selftest`. Im laufenden Betrieb schreibt `rbx-ui` Meldungen
+und jede Minute Audio-Last und Aussetzer nach `%APPDATA%\rekordbox-rs\logs\rbx-ui.log`, Abstürze nach
+`logs\crash-*.txt`.
+
 ## CLI
 
 ```bash

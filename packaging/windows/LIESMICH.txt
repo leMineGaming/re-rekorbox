@@ -1,0 +1,75 @@
+rekordbox-rs für Windows
+========================
+
+Eigenständiger DJ-Player (zwei Decks, Mixer, Effekte, Sampler, eigene Track-Analyse),
+Anbindung des Pioneer DJ XDJ-RX3 und Pro DJ Link. Unabhängige Neuentwicklung; liest
+rekordbox-Analysedateien, verwendet aber keine Teile von rekordbox.
+
+
+Installieren
+------------
+"Installieren.cmd" doppelklicken. Es werden keine Administratorrechte gebraucht:
+  - Programm nach %LOCALAPPDATA%\Programs\rekordbox-rs
+  - Startmenü "rekordbox-rs" (Programm, Selbsttest, Deinstallieren) und Desktop-Verknüpfung
+  - Eintrag unter Einstellungen > Apps zum Entfernen
+Ohne Installation: "rbx-ui.exe" direkt aus dem entpackten Ordner starten.
+
+Windows SmartScreen kann beim ersten Start warnen, weil das Programm nicht signiert ist
+("Weitere Informationen" > "Trotzdem ausführen").
+
+
+Erster Start
+------------
+1. rekordbox-rs starten. Die Bibliothek (rekordbox-Analysen und der Ordner "Musik")
+   wird im Hintergrund gelesen.
+2. Oben rechts "Einstellungen":
+   - Audio: Ausgabegerät und Puffer wählen (dann "Jetzt neu starten").
+     Geräte mit 4 Kanälen bekommen den Kopfhörer-Cue auf Kanal 3/4.
+   - Bibliothek: anderer Musik-Ordner -> "Einlesen".
+   - Controller: Pfad zur Mapping-Datei, z. B.
+     C:\Program Files\rekordbox\rekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv
+     -> "Verbinden". rekordbox muss dafür geschlossen sein.
+   - Pro DJ Link: "Beitreten" (rekordbox muss geschlossen sein).
+   Alle Einstellungen werden gespeichert.
+3. Tracks ohne Analyse werden beim Laden automatisch analysiert; alle auf einmal mit
+   "Fehlende analysieren" über der Trackliste.
+
+Tasten: Deck 1: Z = CUE, X = PLAY, C = SYNC, 1-8 = Hot Cues
+        Deck 2: B = CUE, N = PLAY, M = SYNC, Umschalt+1-8 = Hot Cues
+        Pfeile links/rechts = Crossfader, hoch/runter = Track, Enter = laden (Umschalt: Deck 2)
+
+
+Selbsttest
+----------
+Startmenü > rekordbox-rs > Selbsttest (oder "Selbsttest.cmd", oder in den Einstellungen).
+Prüft automatisch, ohne dass etwas zu hören ist:
+  - Audio-Qualität: Knackser bei Sprüngen, Loops, Fadern und Effekten, Tonhöhe mit Key Lock,
+    Sync-Drift über 3 Minuten, Echo-Timing, Übersteuerung, Kopfhörer-Routing
+  - Soundkarte: Pufferlänge, Latenz, Aussetzer (nur Stille wird ausgegeben)
+  - Leistung und ein Dauerlauf mit zufälliger Bedienung
+  - Bibliothek und Genauigkeit der eigenen Analyse gegenüber rekordbox
+  - MIDI-Geräte und Mapping; mit "Selbsttest.cmd --midi-listen 20" werden 20 s lang
+    Controller-Eingaben aufgezeichnet (währenddessen Regler und Tasten bewegen)
+  - Netzwerk und Pro DJ Link (welche Geräte im Netz gefunden werden)
+Der Bericht öffnet sich im Browser und liegt in %APPDATA%\rekordbox-rs\selftest.
+
+
+Bei Problemen
+-------------
+Bitte diese Dateien schicken:
+  %APPDATA%\rekordbox-rs\logs\rbx-ui.log          Meldungen, jede Minute Audio-Last/Aussetzer
+  %APPDATA%\rekordbox-rs\logs\crash-*.txt         nur nach einem Absturz
+  %APPDATA%\rekordbox-rs\selftest\latest.html     letzter Selbsttest
+Oben in der Programmleiste zeigt "Last x %" die Audio-Rechenzeit; Aussetzer werden rot gezählt.
+Bei Aussetzern in den Einstellungen einen größeren Puffer wählen.
+
+
+Weitere Programme im Ordner
+---------------------------
+rbx-analyze.exe   Ordner analysieren:  rbx-analyze "D:\Musik" --missing
+rbx-play.exe      Player für die Kommandozeile
+rbx-selftest.exe  Selbsttest (Optionen: --quick, --soak SEKUNDEN, --tracks N, --no-network)
+rbf.exe           Werkzeug für rekordbox-Dateiformate (ANLZ, rekordbox.xml, MIDI-Mappings)
+
+
+Lizenz: MIT oder Apache-2.0.

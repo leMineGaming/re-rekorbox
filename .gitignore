@@ -5,3 +5,6 @@
 /analysis/*.snapshot
 /analysis/search_*.json
 /analysis/search_*.err
+
+# packages built by packaging/build-windows.ps1
+/dist

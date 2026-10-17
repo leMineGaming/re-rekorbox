@@ -42,7 +42,7 @@ impl Log {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(|f| Arc::new(Mutex::new(f)));
+        let file = open_text_append(path).map(|f| Arc::new(Mutex::new(f)));
         Log { recent: Default::default(), file, last_error: Default::default() }
     }
 
@@ -79,6 +79,18 @@ impl Log {
     }
 }
 
+/// Open a UTF-8 text file for appending; a new file starts with a byte order mark so that Windows
+/// tools show umlauts correctly.
+fn open_text_append(path: &Path) -> Option<std::fs::File> {
+    use std::io::Write;
+    let new = std::fs::metadata(path).map_or(true, |m| m.len() == 0);
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).ok()?;
+    if new {
+        let _ = f.write_all(b"\xEF\xBB\xBF");
+    }
+    Some(f)
+}
+
 /// Folder for settings, logs and own analyses: `%APPDATA%/rekordbox-rs`.
 pub fn data_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join("rekordbox-rs"))
@@ -111,7 +123,7 @@ pub fn install_crash_handler(program: &'static str) {
         let bt = std::backtrace::Backtrace::force_capture();
         let text = format!("{} {program} {}\n{info}\n\n{bt}\n", timestamp(), env!("CARGO_PKG_VERSION"));
         let path = dir.join(format!("crash-{program}.txt"));
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Some(mut f) = open_text_append(&path) {
             use std::io::Write;
             let _ = f.write_all(text.as_bytes());
         }
