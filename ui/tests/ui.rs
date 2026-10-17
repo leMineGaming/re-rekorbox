@@ -78,7 +78,8 @@ fn load_analyse_play_and_cue_from_the_window() {
     h.step();
     let analysed = wait(&mut h, 30.0, |a| {
         let d = a.loader.deck(0);
-        d.analysis.is_some() && d.busy.is_none() && a.state().decks[0].loaded
+        // the engine applies the analysis a moment after the loader knows it
+        d.analysis.is_some() && d.busy.is_none() && a.state().decks[0].loaded && a.state().decks[0].bpm.is_some()
     });
     assert!(analysed, "deck 1 loaded and analysed");
     let s = h.state().state();
