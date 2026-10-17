@@ -1,0 +1,19 @@
+[package]
+name = "rbx-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop UI (egui) for the rekordbox-rs MVP: library, two decks, mixer, effects, analysis"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
+rbx-engine = { path = "../engine" }
+rekordbox-formats = { path = ".." }
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["eframe", "snapshot", "wgpu"] }
+
+[[bin]]
+name = "rbx-ui"
+path = "src/main.rs"

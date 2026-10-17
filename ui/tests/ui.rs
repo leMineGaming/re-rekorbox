@@ -1,0 +1,164 @@
+//! The window driven headless (egui_kittest, AccessKit): silent engine, synthetic click tracks in a
+//! temporary folder, own analyses written there too. Saves screenshots to `target/ui-shots/`.
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use egui_kittest::kittest::Queryable;
+use egui_kittest::Harness;
+use rbx_engine::output::Output;
+use rbx_engine::pcm::{write_wav, Pcm};
+use rbx_ui::app::{App, Options};
+use rbx_ui::tracks::RowSource;
+
+fn temp(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("rbx-ui-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn app_with_tracks(dir: &Path) -> App {
+    let files: Vec<PathBuf> = [("Test Artist - Click 128.wav", 128.0), ("Other - Click 124.wav", 124.0)]
+        .iter()
+        .map(|(n, bpm)| {
+            let p = dir.join(n);
+            write_wav(&p, &Pcm::click_track(44100, *bpm, 40.0)).unwrap();
+            p
+        })
+        .collect();
+    let opts = Options { library: false, auto_analyze: true, analysis_root: Some(dir.join("anlz")), ..Default::default() };
+    let app = App::new(Output::silent(44100), opts);
+    app.loader.add_files(&files);
+    app
+}
+
+fn harness(app: App) -> Harness<'static, App> {
+    Harness::builder()
+        .with_size([1500.0, 950.0])
+        .with_accessibility_check(false)
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app)
+}
+
+/// Step the UI (in real time, the engine and loader run on threads) until `done` or timeout.
+fn wait(h: &mut Harness<'static, App>, secs: f64, done: impl Fn(&App) -> bool) -> bool {
+    let t = Instant::now();
+    while t.elapsed().as_secs_f64() < secs {
+        h.step();
+        if done(h.state()) {
+            h.step();
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+fn shot(h: &mut Harness<'static, App>, name: &str) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/ui-shots");
+    std::fs::create_dir_all(&dir).unwrap();
+    match h.render() {
+        Ok(img) => img.save(dir.join(format!("{name}.png"))).unwrap(),
+        Err(e) => eprintln!("no screenshot ({e})"),
+    }
+}
+
+#[test]
+fn load_analyse_play_and_cue_from_the_window() {
+    let dir = temp("main");
+    let mut h = harness(app_with_tracks(&dir));
+    assert!(wait(&mut h, 5.0, |a| a.rows().len() == 2), "track list shows the files");
+    assert!(h.state().rows().iter().all(|r| r.source == RowSource::Missing));
+
+    // select a track and load it into deck 1 → it gets analysed automatically
+    h.get_by_label("Click 128").click();
+    h.run_steps(2);
+    h.get_by_label("> Deck 1").click();
+    h.step();
+    let analysed = wait(&mut h, 30.0, |a| {
+        let d = a.loader.deck(0);
+        d.analysis.is_some() && d.busy.is_none() && a.state().decks[0].loaded
+    });
+    assert!(analysed, "deck 1 loaded and analysed");
+    let s = h.state().state();
+    assert!((s.decks[0].bpm.unwrap() - 128.0).abs() < 0.02, "bpm {:?}", s.decks[0].bpm);
+    assert!(wait(&mut h, 5.0, |a| a.rows().iter().any(|r| r.source == RowSource::Own && r.title == "Click 128")), "list shows the own analysis");
+    assert!(dir.join("anlz").is_dir(), "analysis written to the test folder");
+
+    // play: position advances
+    h.get_all_by_label("PLAY").next().unwrap().click();
+    assert!(wait(&mut h, 5.0, |a| a.state().decks[0].position_s > 0.3), "playing");
+    assert!(h.state().state().decks[0].playing);
+
+    // hot cue A on deck 1 (first of the two "A" buttons)
+    h.get_all_by_label("A").next().unwrap().click();
+    assert!(wait(&mut h, 2.0, |a| a.state().decks[0].hot_cues[0]), "hot cue A set");
+
+    // second track into deck 2 by its button, SYNC deck 2 to deck 1
+    h.get_by_label("Click 124").click();
+    h.run_steps(2);
+    h.get_by_label("> Deck 2").click();
+    assert!(wait(&mut h, 30.0, |a| a.loader.deck(1).analysis.is_some() && a.loader.deck(1).busy.is_none()), "deck 2 analysed");
+    shot(&mut h, "before-sync");
+    h.get_all_by_label("SYNC").nth(1).unwrap().click();
+    let synced = wait(&mut h, 2.0, |a| a.state().decks[1].bpm.is_some_and(|b| (b - 128.0).abs() < 0.05));
+    assert!(synced, "deck 2 synced to 128: {:?}", h.state().state().decks.map(|d| (d.bpm, d.tempo, d.loaded, d.playing)));
+    shot(&mut h, "main");
+
+    // pause
+    h.get_all_by_label("PAUSE").next().unwrap().click();
+    assert!(wait(&mut h, 2.0, |a| !a.state().decks[0].playing), "paused");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn search_filters_the_list() {
+    let dir = temp("search");
+    let mut h = harness(app_with_tracks(&dir));
+    assert!(wait(&mut h, 5.0, |a| a.rows().len() == 2));
+    h.state_mut().search = "other".into();
+    h.step();
+    h.step();
+    assert!(h.query_by_label("Click 124").is_some());
+    assert!(h.query_by_label("Click 128").is_none(), "filtered out");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn time_format() {
+    assert_eq!(rbx_ui::app::fmt_time(0.0), "0:00.0");
+    assert_eq!(rbx_ui::app::fmt_time(83.46), "1:23.5");
+}
+
+/// Screenshot with the real library of this machine (read only: no analysis, nothing written).
+/// `cargo test -p rbx-ui --test ui -- --ignored real_library`
+#[test]
+#[ignore]
+fn real_library_screenshot() {
+    let dir = temp("real");
+    let opts = Options { library: true, auto_analyze: false, analysis_root: Some(dir.join("anlz")), ..Default::default() };
+    let mut h = harness(App::new(Output::silent(44100), opts));
+    assert!(wait(&mut h, 60.0, |a| !a.loader.library_loading() && a.rows().len() > 10), "library read");
+    let rekordbox: Vec<String> = h
+        .state()
+        .rows()
+        .iter()
+        .filter(|r| r.source == RowSource::Rekordbox && r.bpm.is_some())
+        .take(2)
+        .map(|r| r.path.to_string_lossy().into_owned())
+        .collect();
+    for (d, p) in rekordbox.iter().enumerate() {
+        h.state_mut().load(d, p);
+    }
+    assert!(wait(&mut h, 30.0, |a| (0..2).all(|d| a.loader.deck(d).analysis.is_some() && a.state().decks[d].loaded)));
+    h.state().loader.log.say("(screenshot)");
+    for d in 0..2 {
+        h.state().state();
+        let _ = d;
+    }
+    shot(&mut h, "real-library");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}

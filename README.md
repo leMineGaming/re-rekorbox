@@ -32,6 +32,13 @@ Sampler, Kopfhörer-Cue, Browser; der XDJ-RX3 ist mit allen 220 Mapping-Funktion
 Außerdem eine **eigene Track-Analyse** (`rbx-analyze`, automatisch beim Laden): Beatgrid, Tonart und alle
 Wellenformen, geschrieben als ANLZ-Dateien im rekordbox-Format (SPEC §5j, Genauigkeit §8a).
 
+**[`ui/`](ui/README.md)** – die Oberfläche (`rbx-ui`, egui): Trackliste mit Analyse-Status, zwei Decks mit
+Wellenformen, Mixer, Effekte, Sampler, Controller und DJ Link – damit lässt sich das MVP direkt ausprobieren:
+
+```bash
+cargo run --release -p rbx-ui
+```
+
 ## Bauen und testen
 
 Voraussetzung: Rust (stable, getestet mit 1.99.1).
@@ -127,6 +134,8 @@ src/xml/                   rekordbox.xml-Implementierung
 src/midi*.rs, src/djlink.rs  MIDI-Mappings, MIDI-Eingang, DJ Link
 src/bin/rbf.rs             CLI
 tests/                     Tests mit synthetischen Daten
+engine/                    Audio-Engine, Analyse, Controller, Sitzung (rbx-play, rbx-analyze)
+ui/                        Oberfläche (rbx-ui)
 analysis/scripts/          Auswerteskripte für die Black-Box-Beobachtung (Python)
 analysis/ghidra_scripts/   Ghidra-Abfrageskript RbQuery.java; analysis/rbq.sh als Aufrufer
 ```
