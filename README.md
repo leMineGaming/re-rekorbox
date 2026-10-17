@@ -20,6 +20,9 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `midi_device` | WinMM-Zugriff (Windows): MIDI-Geräte auflisten, Eingang öffnen | §5f-2 |
 | `devicesql` | DeviceSQL-String-Kodierung (kurz ASCII / lang UTF-16 mit Markern) und `.edb`-Container | §5h |
 | `djlink` | Pro DJ Link: Kopfformate, Port 50000 (Discovery, ID-Anfragen, Keep-alive, Disconnect), Beat (50001), CDJ- und Mixer-Status (50002), Gerätetabelle mit Zwei-Deck-Regel | §5i |
+| `djlink_participant` | Teilnahme am DJ-Link-Netz als Zustandsmaschine: Discovery, Nummernvergabe (0x11, 0x12, 0x29–0x2C), Keep-alive alle 2 s, Konflikt, Alterung | §5i |
+| `djlink_net` | UDP-Betrieb der Teilnahme (Ports 50000–50002), Empfang fremder Beat-/Statuspakete, eigene Beat-Pakete, Beat-Uhr | §5i |
+| `netif` | IPv4-Netzwerkadapter mit MAC und Broadcast-Adresse (Windows `GetAdaptersAddresses`) | – |
 | `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `midi-route`, `midi-decode`, `midi-devices`, `midi-monitor`, `pad`, `edb`, `djlink-listen` | – |
 
 Dazu im Workspace: **[`engine/`](engine/README.md)** – Zwei-Deck-Audio-Engine (`rbx-engine`, Programm `rbx-play`),
@@ -36,7 +39,7 @@ cargo test --workspace
 
 77 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
 25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 9 für die MIDI-Eingangsverarbeitung, 5 für Pad-Dateien,
-4 für DeviceSQL, 10 für DJ Link, 1 Doku-Test; dazu 55 Tests der Audio-Engine inkl. Effekten und Controller-Anbindung (`engine/`).
+4 für DeviceSQL, 20 für DJ Link (davon 2 über echte UDP-Sockets auf 127.0.0.1), 1 Doku-Test; dazu 55 Tests der Audio-Engine inkl. Effekten und Controller-Anbindung (`engine/`).
 
 ## CLI
 
@@ -94,9 +97,10 @@ Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round
 - `PCO2`, `PWVC`, `PKEY`, `PVDI` werden roh durchgereicht; die PVDI-Verschleierung wird bewusst nicht nachgebaut.
 - **MIDI**: Toggle, Parameter, JogRotateAbsPos und JogTimestamp haben keine Eingangsverarbeitung; die
   Tempo-Polynomkurve des DDJ-SX2 (Typ 8 auf `B?04`) ist nicht nachgebaut; System-Exclusive wird nicht empfangen.
-- **DJ Link**: nur Pakete lesen/bauen und die Gerätetabelle; der ID-Vergabe-Ablauf als Teilnehmer (Discovery →
-  IdUse → IdSet → Keep-alive mit Zeitgebern) ist spezifiziert, aber nicht als laufender Dienst umgesetzt. Weitere
-  Status-Pakettypen (z. B. 0x05, 0x33, 0x56) werden erkannt, aber nicht dekodiert.
+- **DJ Link**: Teilnahme (Nummernvergabe, Keep-alive, eigene Beat-Pakete) ist umgesetzt, aber nur über Loopback
+  getestet, nicht in einem echten Netz mit Geräten. Eigene CDJ-Statuspakete (für Sync von Geräten auf dieses
+  Programm) werden nicht gesendet; weitere Status-Pakettypen (z. B. 0x05, 0x33, 0x56) werden erkannt, aber nicht
+  dekodiert.
 
 ## Bewusst nicht nachgebaut
 

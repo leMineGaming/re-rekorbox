@@ -84,6 +84,8 @@ pub struct DeckState {
     pub auto_cue: bool,
     /// Vinyl brake/start time in seconds (0 = instant).
     pub brake_s: f64,
+    /// Fractional beat number at the current position (needs a grid; beat 0 = first downbeat).
+    pub beat: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -684,6 +686,7 @@ impl Deck {
             memory_cues: self.memory.len(),
             auto_cue: self.auto_cue,
             brake_s: self.brake_s,
+            beat: self.grid.map(|g| g.beat_at(self.position_s())),
         }
     }
 

@@ -11,7 +11,9 @@
 //! found by the mapping's device name, override with `--midi-in NAME` / `--midi-out NAME`). With a
 //! mapping loaded, `midi B0 22 41` on stdin injects a message as if the controller had sent it.
 //! `--samples DIR` fills the sampler from a folder (else built-in sounds), `--browse DIR` sets the
-//! browser root for BROWSE/LOAD (default: the user's Music folder).
+//! browser root for BROWSE/LOAD (default: the user's Music folder). `--djlink [ADAPTER]` joins the
+//! Pro DJ Link network on that adapter (name part or IP; default: first private / link-local one),
+//! sends beat packets of the playing deck; `link` on stdin shows the network.
 //! Sources: an audio file path, `tone` (440 Hz sine) or `click:BPM` (click track) – the latter two
 //! allow testing without music files.
 
@@ -61,8 +63,17 @@ fn split_opts<'a>(rest: &[&'a str]) -> (Vec<&'a str>, Vec<(&'a str, &'a str)>) {
     let mut i = 0;
     while i < rest.len() {
         if let Some(flag) = rest[i].strip_prefix("--") {
-            opts.push((flag, rest.get(i + 1).copied().unwrap_or("")));
-            i += 2;
+            // a flag without value (end of line or followed by another flag) gets ""
+            match rest.get(i + 1) {
+                Some(v) if !v.starts_with("--") => {
+                    opts.push((flag, *v));
+                    i += 2;
+                }
+                _ => {
+                    opts.push((flag, ""));
+                    i += 1;
+                }
+            }
         } else {
             pos.push(rest[i]);
             i += 1;
@@ -137,6 +148,10 @@ fn play(rest: &[&str]) -> Result<(), String> {
         Some((_, m)) => Some(start_controller(m, &opts, &out)?),
         None => None,
     };
+    let link = match opts.iter().find(|(k, _)| *k == "djlink") {
+        Some((_, iface)) => Some(start_link(if iface.is_empty() || *iface == "auto" { None } else { Some(*iface) }, &out)?),
+        None => None,
+    };
     if let Some(c) = &ctl {
         let mut c = c.controller.lock().unwrap();
         for (d, s) in sources.iter().take(2).enumerate() {
@@ -153,6 +168,10 @@ fn play(rest: &[&str]) -> Result<(), String> {
             "" => continue,
             "quit" | "q" | "exit" => break,
             "state" | "s" => print_state(&out),
+            "link" => match &link {
+                Some(l) => print_link(&l.lock().unwrap()),
+                None => eprintln!("start with --djlink [adapter]"),
+            },
             "browse" => match &ctl {
                 Some(c) => match c.controller.lock().unwrap().browser() {
                     Some(b) => println!("{}", b.describe()),
@@ -207,6 +226,61 @@ fn tone(seconds: f64) -> Result<(), String> {
     out.send(Command::Play(0));
     std::thread::sleep(Duration::from_secs_f64(seconds));
     Ok(())
+}
+
+/// Join DJ Link and send beat packets of the playing deck (the sync master, else the loudest).
+fn start_link(iface: Option<&str>, out: &Output) -> Result<Arc<std::sync::Mutex<rekordbox_formats::djlink_net::Link>>, String> {
+    use rekordbox_formats::djlink_net::{BeatClock, Link, LinkConfig};
+    use rekordbox_formats::djlink_participant::Config;
+    use rekordbox_formats::netif;
+    let list = netif::list();
+    let i = netif::choose(&list, iface).ok_or(format!("no network adapter matching {iface:?} (see `cargo run --example netif`)"))?;
+    println!("DJ Link: {} {} (broadcast {})", i.name, i.ip, i.broadcast());
+    let cfg = LinkConfig::new(Config::new("rekordbox-rs", i.mac, i.ip), i.broadcast());
+    let link = Arc::new(std::sync::Mutex::new(Link::start(cfg).map_err(|e| format!("{e} (is rekordbox running?)"))?));
+    let (l, state) = (link.clone(), out.state_handle());
+    std::thread::spawn(move || {
+        let mut clock = BeatClock::default();
+        loop {
+            std::thread::sleep(Duration::from_millis(5));
+            let s = *state.lock().unwrap();
+            let playing: Vec<usize> = (0..2).filter(|&d| s.decks[d].playing && s.decks[d].beat.is_some()).collect();
+            let deck = match s.master {
+                Some(m) if playing.contains(&m) => Some(m),
+                _ => playing.into_iter().max_by(|&a, &b| s.channel_peak[a].total_cmp(&s.channel_peak[b])),
+            };
+            let beat = deck.and_then(|d| s.decks[d].bpm.map(|bpm| (s.decks[d].beat, bpm)));
+            let packet = match beat {
+                Some((b, bpm)) => clock.update("rekordbox-rs", b, bpm),
+                None => clock.update("rekordbox-rs", None, 120.0),
+            };
+            let Ok(link) = l.lock() else { return };
+            if let Some(p) = packet {
+                link.send_beat(&p);
+            }
+        }
+    });
+    Ok(link)
+}
+
+fn print_link(l: &rekordbox_formats::djlink_net::Link) {
+    let s = l.state();
+    println!("DJ Link: number {:?}, phase {:?}, {} undecodable datagrams", s.number, s.phase, s.errors);
+    for d in &s.devices {
+        println!("  #{:<3} {:<20} kind {} ip {}{}", d.number, d.name, d.kind, d.ip, if d.second_deck { " (2nd deck)" } else { "" });
+    }
+    for (n, b) in &s.beats {
+        println!("  beat  #{n}: {:.2} BPM, beat {}/4", f64::from(b.effective_bpm100()) / 100.0, b.beat_in_bar);
+    }
+    for (n, c) in &s.status {
+        println!("  status #{n}: play state {} tempo {:?}", c.play_state, c.effective_bpm100().map(|v| f64::from(v) / 100.0));
+    }
+    for (n, m) in &s.mixers {
+        println!("  mixer #{n}: decks {:?}", m.decks);
+    }
+    for e in s.events.iter().rev().take(5) {
+        println!("  event: {e:?}");
+    }
 }
 
 /// Fill the 16 sampler slots: audio files of `dir`, the rest with the built-in sounds.

@@ -62,6 +62,23 @@ Sampler-Pads Deck 1 = Slots 1–8 / Deck 2 = Slots 9–16, „Link Cue“ = imme
 **Am echten Gerät noch nicht geprüft**: Tempo-Fader-Richtung (`tempo_invert`), Pad-LED-Farben (es wird nur
 an/aus gesendet), Jog-Auflösung (`jog_ticks_per_rev`), Kanalbelegung des Kopfhörerausgangs.
 
+## Pro DJ Link
+
+```bash
+cargo run --example netif
+cargo run --release -p rbx-engine --bin rbx-play -- play track1.flac --djlink Ethernet
+```
+
+`--djlink [ADAPTER]` (Name, Namensteil oder IP; ohne Angabe bzw. `auto`: erster privater, dann Link-Local-Adapter)
+meldet das Programm als „rekordbox-rs“ (Geräteart 4 wie rekordbox) im Netz an: Discovery, Nummernvergabe mit
+0x11/0x12/0x29–0x2C, Keep-alive alle 2 s, Abmeldung beim Beenden. Beat-Pakete werden für das spielende Deck mit
+Beatgrid gesendet (Sync-Master, sonst das lautere). `link` zeigt Nummer, Geräte, deren Beats, CDJ- und
+Mixer-Status. Direkt per Kabel ohne Router haben PC und Gerät Link-Local-Adressen (169.254.x.x) – auch die
+werden gefunden. rekordbox darf dabei nicht laufen (gleiche Ports).
+
+**Nur über Loopback getestet**; Verhalten gegenüber echten Geräten (Annahme der Nummer, Anzeige am XDJ-RX3) ist
+offen (SPEC U28–U31).
+
 ## Tests
 
 `cargo test -p rbx-engine`: 55 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
