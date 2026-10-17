@@ -16,3 +16,6 @@ path = "src/bin/rbf.rs"
 
 [dependencies]
 quick-xml = "=0.31.0"
+
+[workspace]
+members = [".", "engine"]

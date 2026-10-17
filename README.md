@@ -22,17 +22,20 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `djlink` | Pro DJ Link: Kopfformate, Port 50000 (Discovery, ID-Anfragen, Keep-alive, Disconnect), Beat (50001), CDJ- und Mixer-Status (50002), Gerätetabelle mit Zwei-Deck-Regel | §5i |
 | `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `midi-route`, `midi-decode`, `midi-devices`, `midi-monitor`, `pad`, `edb`, `djlink-listen` | – |
 
+Dazu im Workspace: **[`engine/`](engine/README.md)** – Zwei-Deck-Audio-Engine (`rbx-engine`, Programm `rbx-play`),
+Eigenentwurf für das MVP, nicht aus dem rekordbox-Code abgeleitet.
+
 ## Bauen und testen
 
 Voraussetzung: Rust (stable, getestet mit 1.99.1).
 
 ```bash
-cargo test
+cargo test --workspace
 ```
 
 77 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
 25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 9 für die MIDI-Eingangsverarbeitung, 5 für Pad-Dateien,
-4 für DeviceSQL, 10 für DJ Link, 1 Doku-Test.
+4 für DeviceSQL, 10 für DJ Link, 1 Doku-Test; dazu 13 Tests der Audio-Engine (`engine/`).
 
 ## CLI
 
@@ -61,7 +64,9 @@ cargo run --release --bin rbf -- check "%APPDATA%\Pioneer\rekordbox\share\PIONEE
   `MidiMappings/XDJ-RX3.midi.csv` mit 730 Eingangsnachrichten (u. a. 116 Pad-, 82 Button-, 15 KnobSlider-Zeilen);
   nur die Gerätewerte `JogRatency` und `MidiOutInterval` (Typ `Parameter`) haben keine Eingangsverarbeitung.
   Live-Test, sobald das Gerät angeschlossen ist:
-  `rbf midi-monitor "C:\Program Filesekordboxekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"`
+  `rbf midi-monitor "C:\Program Files
+ekordbox
+ekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"`
   (das Eingangsgerät wird über den Namen „XDJ-RX3“ gesucht).
 - **DJ Link** (LAN): `rbf djlink-listen 60 --raw > xdj.txt` zeichnet auf, was das Gerät sendet; damit lassen sich
   SPEC U28–U30 (Gerätenummer, Ladeinfo, Zustandsnamen) bestätigen. rekordbox selbst sollte dabei geschlossen sein

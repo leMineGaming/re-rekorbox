@@ -1,0 +1,134 @@
+//! Text commands for the CLI and for scripted renders.
+//!
+//! ```text
+//! play 1 | pause 1 | toggle 1          transport (decks 1 and 2)
+//! cue 1 | cueup 1                      CUE pressed / released
+//! hot 1 3 | hotup 1 3 | hotdel 1 3     hot cue 3 (1-based) pressed / released / deleted
+//! in 1 | out 1 | reloop 1              manual loop
+//! loop 1 4 | loopx 1 0.5               beat loop of 4 beats, scale active loop
+//! tempo 1 0.25 | range 1 16            tempo fader −1..1, range 6/10/16/100 %
+//! bpm 1 128 [0.12]                     set grid: BPM and first beat in seconds
+//! touch 1 | release 1 | jog 1 -40      jog wheel
+//! seek 1 0.5 | at 1 63.2               needle (fraction) / absolute seconds
+//! vol 1 0.8 | trim 1 1.2 | quant 1 on  channel settings
+//! sync 2                               match deck 2 to deck 1
+//! xf -1 | master 0.9                   crossfader −1..1, master gain
+//! ```
+//! A script is `time:command; time:command; …` with times in seconds, e.g.
+//! `0:play 1; 4:bpm 2 124; 4:sync 2; 4:play 2; 8:xf 1`.
+
+use crate::deck::Grid;
+use crate::mixer::Command;
+
+fn deck(s: Option<&str>) -> Result<usize, String> {
+    match s.and_then(|s| s.parse::<usize>().ok()) {
+        Some(d @ 1..=2) => Ok(d - 1),
+        _ => Err("deck must be 1 or 2".into()),
+    }
+}
+
+fn num<T: std::str::FromStr>(s: Option<&str>, what: &str) -> Result<T, String> {
+    s.and_then(|s| s.parse().ok()).ok_or(format!("missing or invalid {what}"))
+}
+
+fn slot(s: Option<&str>) -> Result<usize, String> {
+    match num::<usize>(s, "hot cue number")? {
+        n @ 1..=8 => Ok(n - 1),
+        _ => Err("hot cue number must be 1..8".into()),
+    }
+}
+
+/// Parse one command line (without `load`, which needs file decoding).
+pub fn parse(line: &str) -> Result<Command, String> {
+    let mut it = line.split_whitespace();
+    let word = it.next().ok_or("empty command")?.to_lowercase();
+    let a = it.next();
+    let b = it.next();
+    let c = it.next();
+    use Command::*;
+    Ok(match word.as_str() {
+        "play" => Play(deck(a)?),
+        "pause" => Pause(deck(a)?),
+        "toggle" => TogglePlay(deck(a)?),
+        "cue" => CuePress(deck(a)?),
+        "cueup" => CueRelease(deck(a)?),
+        "hot" => HotCuePress(deck(a)?, slot(b)?),
+        "hotup" => HotCueRelease(deck(a)?, slot(b)?),
+        "hotdel" => HotCueDelete(deck(a)?, slot(b)?),
+        "in" => LoopIn(deck(a)?),
+        "out" => LoopOut(deck(a)?),
+        "reloop" => ReloopExit(deck(a)?),
+        "loop" => BeatLoop(deck(a)?, num(b, "beats")?),
+        "loopx" => LoopScale(deck(a)?, num(b, "factor")?),
+        "tempo" => TempoFader(deck(a)?, num(b, "tempo fader value")?),
+        "range" => {
+            let idx = match num::<u32>(b, "range")? {
+                6 => 0,
+                10 => 1,
+                16 => 2,
+                100 => 3,
+                _ => return Err("range must be 6, 10, 16 or 100".into()),
+            };
+            TempoRange(deck(a)?, idx)
+        }
+        "bpm" => {
+            let bpm: f64 = num(b, "BPM")?;
+            if bpm <= 0.0 {
+                return Err("BPM must be positive".into());
+            }
+            let first = c.map_or(Ok(0.0), |s| s.parse().map_err(|_| "invalid first beat".to_string()))?;
+            SetGrid { deck: deck(a)?, grid: Some(Grid { bpm, first_beat_s: first }) }
+        }
+        "touch" => JogTouch(deck(a)?, true),
+        "release" => JogTouch(deck(a)?, false),
+        "jog" => Jog(deck(a)?, num(b, "jog delta")?),
+        "seek" => SeekFraction(deck(a)?, num(b, "fraction")?),
+        "at" => SeekSeconds(deck(a)?, num(b, "seconds")?),
+        "vol" => Volume(deck(a)?, num(b, "volume")?),
+        "trim" => Trim(deck(a)?, num(b, "trim")?),
+        "quant" => Quantize(deck(a)?, matches!(b, Some("on" | "1" | "true"))),
+        "sync" => Sync(deck(a)?),
+        "xf" => Crossfader(num(a, "crossfader value")?),
+        "master" => MasterGain(num(a, "master gain")?),
+        other => return Err(format!("unknown command {other:?}")),
+    })
+}
+
+/// Parse a script into (time, command) pairs sorted by time.
+pub fn parse_script(script: &str) -> Result<Vec<(f64, Command)>, String> {
+    let mut out = Vec::new();
+    for part in script.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let (t, cmd) = part.split_once(':').ok_or(format!("{part:?}: expected time:command"))?;
+        let t: f64 = t.trim().parse().map_err(|_| format!("{part:?}: invalid time"))?;
+        out.push((t, parse(cmd).map_err(|e| format!("{part:?}: {e}"))?));
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(out)
+}
+
+/// Run a script against a mixer for `seconds` and return the rendered audio. Commands take effect
+/// at the first block boundary at or after their time (blocks are at most 10 ms).
+pub fn render_script(mixer: &mut crate::mixer::Mixer, script: &str, seconds: f64) -> Result<crate::pcm::Pcm, String> {
+    let sr = mixer.sample_rate;
+    let total = (seconds * f64::from(sr)) as usize;
+    let block = (sr as usize / 100).max(1);
+    let mut events = parse_script(script)?.into_iter().peekable();
+    let mut out = vec![[0.0f32; 2]; total];
+    let mut done = 0;
+    while done < total {
+        let t = done as f64 / f64::from(sr);
+        while events.peek().is_some_and(|(at, _)| *at <= t + 1e-9) {
+            mixer.apply(events.next().unwrap().1);
+        }
+        let mut end = (done + block).min(total);
+        if let Some((at, _)) = events.peek() {
+            let at_frame = (at * f64::from(sr)).ceil() as usize;
+            if at_frame > done && at_frame < end {
+                end = at_frame;
+            }
+        }
+        mixer.render(&mut out[done..end]);
+        done = end;
+    }
+    Ok(crate::pcm::Pcm::new(sr, out))
+}
