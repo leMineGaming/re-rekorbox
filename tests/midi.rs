@@ -43,6 +43,16 @@ fn version_other_than_one_disables_rows() {
 }
 
 #[test]
+fn file_line_is_detected_by_substring() {
+    // a BOM (or anything) before "@file" still makes it the header line
+    let m = parse("xx@file,1,DEV\nBrowse,Browse,Rotary,B640,,,,,,,,,,,c\n");
+    assert_eq!((m.version, m.device.as_str(), m.entries.len()), (1, "DEV", 1));
+    // quirk: a data row containing "@file" is taken as a header line
+    let m = parse("@file,1,DEV\nA,B,Button,9000,,,,,,,,,,,see @file docs\nC,D,Button,9001,,,,,,,,,,,x\n");
+    assert_eq!(m.entries.len(), 0, "the second line reset the version to 0 (field 1 = 'B')");
+}
+
+#[test]
 fn number_parsing_rules() {
     assert_eq!(hex_value("B000"), 0xB000);
     assert_eq!(hex_value("b0 0x1"), 0xB001, "non-hex characters are skipped: b,0,0,1 (x skipped)");

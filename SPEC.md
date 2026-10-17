@@ -444,9 +444,12 @@ Belege: 69 mitgelieferte Dateien [OBS] und der Loader im Dekompilat/der Assembly
 ### Datei [GH:0x1424c4a50]
 - Zeilenweise; **leere Zeilen und Zeilen, die mit `#` beginnen, werden übersprungen** (z. B. die Spaltenzeile
   `#name,function,type,input,deck1,…` und deaktivierte Einträge wie `#JogScratch,…`).
-- `@file,<version>,<gerät>`: an `,` zerlegt; `version` = Ganzzahl (Feld 1), `gerät` = Text (Feld 2).
+- Kopfzeile: jede (nicht mit `#` beginnende) Zeile, die **`@file` enthält** – geprüft per Teilstring-Suche
+  (`indexOf ≥ 0`, GH:0x142a6b350 → 0x140ef6df0), nicht als Präfix. An `,` zerlegt: `version` = Ganzzahl (Feld 1),
+  `gerät` = Text (Feld 2). Eigenheit: eine Datenzeile, die `@file` enthält, wird ebenfalls als Kopfzeile gelesen.
 - Datenzeilen werden nur verarbeitet, solange `version == 1`; die Datei gilt als gültig, wenn `version == 1`.
-- [OBS] 6 der 69 Dateien beginnen mit einem UTF-8-BOM vor `@file`. Ob der Loader das BOM entfernt, ist offen (U24).
+- [OBS] 6 der 69 Dateien beginnen mit einem UTF-8-BOM vor `@file`. Der Zeilenleser entfernt es nicht
+  [GH:0x142a713e0]; wegen der Teilstring-Suche funktioniert die Kopfzeile trotzdem (BOM steht nur in Feld 0).
 
 ### Zeile [GH:0x1424c3890]
 - Zerlegung an `,` **ohne Anführungszeichen-Behandlung**; mindestens **15 Felder**, sonst verworfen; Feld 0 darf nicht
@@ -543,7 +546,7 @@ Benutzervarianten [GH:0x141c0ecf0].
 | U21 | ~~Location-Umwandlung~~ → **geklärt** (5e: Reader `\`→`/`, Writer unverändert) | – |
 | U22 | ~~Escaping~~ → **geklärt** (5e: Attribute ohne Zeichen < 0x20; Ausgabeformat CRLF, Umbruch 60) | – |
 | U23 | `export.pdb` (DeviceSQL) – noch nicht analysiert; kein Exportmedium vorhanden | USB-Export als Testdaten + Dekompilat |
-| U24 | MIDI-CSV: Behandlung eines UTF-8-BOM vor `@file` (6 Dateien betroffen) | Zeilenleser GH:0x142a838b0 |
+| U24 | ~~BOM vor `@file`~~ → **geklärt** (5f: Kopfzeile per Teilstring-Suche, BOM bleibt in Feld 0) | – |
 | U25 | MIDI-CSV: Bedeutung der Typ-Codes 1–3, 9–11, 0x15, 0x16 (kein Text bekannt) und Semantik von `Fast`/`RO`/`Priority` | Nutzer der Mapping-Struktur |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |

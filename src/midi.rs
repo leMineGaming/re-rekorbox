@@ -313,7 +313,8 @@ impl MidiMapping {
     }
 }
 
-/// Parse a mapping file. A leading UTF-8 BOM is removed (design choice, SPEC U24).
+/// Parse a mapping file. A leading UTF-8 BOM is removed and reported; the original loader copes with it
+/// because it detects the `@file` line by substring (§5f).
 pub fn parse(text: &str) -> MidiMapping {
     let mut m = MidiMapping::default();
     let text = match text.strip_prefix('\u{feff}') {
@@ -333,7 +334,8 @@ pub fn parse(text: &str) -> MidiMapping {
             m.report.comment_lines += 1;
             continue;
         }
-        if line.starts_with("@file") {
+        // The original loader tests "line contains @file" (indexOf >= 0), not a prefix (§5f).
+        if line.contains("@file") {
             let parts: Vec<&str> = line.split(',').collect();
             if parts.len() > 1 {
                 m.version = int_value(parts[1]);
