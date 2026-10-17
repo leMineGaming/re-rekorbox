@@ -73,7 +73,10 @@ cargo run --release -p rbx-engine --bin rbx-play -- play track1.flac --djlink Et
 meldet das Programm als „rekordbox-rs“ (Geräteart 4 wie rekordbox) im Netz an: Discovery, Nummernvergabe mit
 0x11/0x12/0x29–0x2C, Keep-alive alle 2 s, Abmeldung beim Beenden. Beat-Pakete werden für das spielende Deck mit
 Beatgrid gesendet (Sync-Master, sonst das lautere). `link` zeigt Nummer, Geräte, deren Beats, CDJ- und
-Mixer-Status. Direkt per Kabel ohne Router haben PC und Gerät Link-Local-Adressen (169.254.x.x) – auch die
+Mixer-Status. **Externer Sync**: `linksync 1 on [Nummer]` lässt Deck 1 Tempo und Beat-Phase eines Geräts im
+Netz folgen (ohne Nummer: das erste Gerät, das Beats sendet), `linksync 1 off` beendet das; bei jedem
+Beat-Paket wird das Tempo übernommen und die Phase nur bei mehr als 0,5 % eines Beats Abweichung korrigiert.
+Direkt per Kabel ohne Router haben PC und Gerät Link-Local-Adressen (169.254.x.x) – auch die
 werden gefunden. rekordbox darf dabei nicht laufen (gleiche Ports).
 
 **Nur über Loopback getestet**; Verhalten gegenüber echten Geräten (Annahme der Nummer, Anzeige am XDJ-RX3) ist
@@ -81,7 +84,7 @@ offen (SPEC U28–U31).
 
 ## Tests
 
-`cargo test -p rbx-engine`: 55 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
+`cargo test -p rbx-engine`: 56 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
 MIDI-Gerät nötig): Decoder, Deck, Loops, Sync, Jog, EQ-Frequenzgang, Color FX, alle 14 Beat FX
 (Zeitpunkt, Gate-Anteil, Tonhöhe, Bremse), Tap-Tempo, Reverse, Slip, Key Lock, Key Shift, Bremse,
 Memory Cues, Auto Cue, Sampler, Cue-Bus, Crossfader-Kurve, Browser und die Controller-Zuordnung samt LEDs.

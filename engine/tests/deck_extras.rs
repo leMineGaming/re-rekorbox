@@ -190,3 +190,28 @@ fn instant_double_and_sync_master() {
     assert!((m.decks[0].bpm().unwrap() - m.decks[1].bpm().unwrap()).abs() < 1e-9);
     assert_eq!(m.state().master, Some(1));
 }
+
+#[test]
+fn external_sync_tempo_and_phase() {
+    let mut m = Mixer::new(SR);
+    m.apply(Command::Load { deck: 0, pcm: Arc::new(Pcm::click_track(SR, 120.0, 30.0)), grid: Some(Grid { bpm: 120.0, first_beat_s: 0.0 }) });
+    m.apply(Command::Play(0));
+    m.render_offline(1.1); // phase 0.2 within a beat
+    m.apply(Command::SyncExternal { deck: 0, bpm: 126.0, phase: 0.7 });
+    assert!((m.decks[0].bpm().unwrap() - 126.0).abs() < 1e-9);
+    let phase = (m.decks[0].position_s() * 2.0).rem_euclid(1.0);
+    assert!((phase - 0.7).abs() < 1e-6, "aligned to the external phase: {phase}");
+    // a tiny difference is left alone (no jump on every beat)
+    let before = pos_of(&m);
+    m.apply(Command::SyncExternal { deck: 0, bpm: 126.0, phase: 0.702 });
+    assert_eq!(pos_of(&m), before);
+    // a deck without a grid ignores external sync
+    let mut n = mixer(ramp(5.0));
+    n.apply(Command::SetGrid { deck: 0, grid: None });
+    n.apply(Command::SyncExternal { deck: 0, bpm: 140.0, phase: 0.0 });
+    assert_eq!(n.decks[0].tempo(), 1.0);
+}
+
+fn pos_of(m: &Mixer) -> f64 {
+    m.decks[0].position_s()
+}

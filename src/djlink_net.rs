@@ -66,8 +66,9 @@ pub struct LinkState {
     pub number: Option<u8>,
     pub phase: Option<State>,
     pub devices: Vec<Device>,
-    /// Last beat packet per device number.
+    /// Last beat packet per device number, with the time it arrived.
     pub beats: BTreeMap<u8, Beat>,
+    pub beat_at: BTreeMap<u8, Instant>,
     pub status: BTreeMap<u8, CdjStatus>,
     pub mixers: BTreeMap<u8, MixerStatus>,
     /// Recent events (oldest first, at most 50).
@@ -140,6 +141,7 @@ impl Link {
                         let mut s = st.lock().unwrap();
                         match decode(port, &buf[..n]) {
                             Ok(Packet::Beat(b)) => {
+                                s.beat_at.insert(b.device, Instant::now());
                                 s.beats.insert(b.device, b);
                             }
                             Ok(Packet::CdjStatus(c)) => {
@@ -163,6 +165,7 @@ impl Link {
                     let own = participant.number();
                     if let Some(n) = own {
                         s.beats.remove(&n);
+                        s.beat_at.remove(&n);
                     }
                     s.events.extend(participant.take_events());
                     let excess = s.events.len().saturating_sub(50);
@@ -211,6 +214,20 @@ impl Drop for Link {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Tempo and beat phase of another device derived from its last beat packet: (BPM, phase 0..1
+/// within the current beat), or `None` without a recent packet (older than two beats).
+pub fn external_beat(state: &LinkState, device: u8) -> Option<(f64, f64)> {
+    let b = state.beats.get(&device)?;
+    let at = state.beat_at.get(&device)?;
+    let bpm = f64::from(b.effective_bpm100()) / 100.0;
+    if bpm <= 0.0 {
+        return None;
+    }
+    let beat_s = 60.0 / bpm;
+    let elapsed = at.elapsed().as_secs_f64();
+    (elapsed < 2.0 * beat_s).then(|| (bpm, (elapsed / beat_s).fract()))
 }
 
 /// Tracks the beat position of a playing deck and produces a beat packet on every new beat.

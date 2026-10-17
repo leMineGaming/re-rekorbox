@@ -13,7 +13,8 @@
 //! `--samples DIR` fills the sampler from a folder (else built-in sounds), `--browse DIR` sets the
 //! browser root for BROWSE/LOAD (default: the user's Music folder). `--djlink [ADAPTER]` joins the
 //! Pro DJ Link network on that adapter (name part or IP; default: first private / link-local one),
-//! sends beat packets of the playing deck; `link` on stdin shows the network.
+//! sends beat packets of the playing deck; `link` on stdin shows the network, `linksync 1 on [N]` lets
+//! deck 1 follow tempo and beat of DJ Link device N (default: the first one sending beats).
 //! Sources: an audio file path, `tone` (440 Hz sine) or `click:BPM` (click track) – the latter two
 //! allow testing without music files.
 
@@ -169,7 +170,23 @@ fn play(rest: &[&str]) -> Result<(), String> {
             "quit" | "q" | "exit" => break,
             "state" | "s" => print_state(&out),
             "link" => match &link {
-                Some(l) => print_link(&l.lock().unwrap()),
+                Some(l) => print_link(&l.link.lock().unwrap()),
+                None => eprintln!("start with --djlink [adapter]"),
+            },
+            l if l.starts_with("linksync ") => match &link {
+                Some(h) => {
+                    let w: Vec<&str> = l.split_whitespace().collect();
+                    let deck = w.get(1).and_then(|d| d.parse::<usize>().ok()).filter(|d| (1..=2).contains(d));
+                    match (deck, w.get(2).copied()) {
+                        (Some(d), Some("on")) => {
+                            let dev = w.get(3).and_then(|n| n.parse::<u8>().ok());
+                            h.follow.lock().unwrap()[d - 1] = Some(dev);
+                            println!("deck {d} follows DJ Link device {}", dev.map_or("(first with beats)".into(), |n| n.to_string()));
+                        }
+                        (Some(d), Some("off")) => h.follow.lock().unwrap()[d - 1] = None,
+                        _ => eprintln!("linksync <deck> on [device] | linksync <deck> off"),
+                    }
+                }
                 None => eprintln!("start with --djlink [adapter]"),
             },
             "browse" => match &ctl {
@@ -228,9 +245,17 @@ fn tone(seconds: f64) -> Result<(), String> {
     Ok(())
 }
 
-/// Join DJ Link and send beat packets of the playing deck (the sync master, else the loudest).
-fn start_link(iface: Option<&str>, out: &Output) -> Result<Arc<std::sync::Mutex<rekordbox_formats::djlink_net::Link>>, String> {
-    use rekordbox_formats::djlink_net::{BeatClock, Link, LinkConfig};
+/// DJ Link in the background: the link and which decks follow which device.
+struct LinkHandle {
+    link: Arc<std::sync::Mutex<rekordbox_formats::djlink_net::Link>>,
+    /// Per deck: `Some(device)` = follow that device (`Some(None)` = first device with beats).
+    follow: Arc<std::sync::Mutex<[Option<Option<u8>>; 2]>>,
+}
+
+/// Join DJ Link, send beat packets of the playing deck (the sync master, else the louder one) and
+/// let decks follow external devices.
+fn start_link(iface: Option<&str>, out: &Output) -> Result<LinkHandle, String> {
+    use rekordbox_formats::djlink_net::{external_beat, BeatClock, Link, LinkConfig};
     use rekordbox_formats::djlink_participant::Config;
     use rekordbox_formats::netif;
     let list = netif::list();
@@ -238,9 +263,11 @@ fn start_link(iface: Option<&str>, out: &Output) -> Result<Arc<std::sync::Mutex<
     println!("DJ Link: {} {} (broadcast {})", i.name, i.ip, i.broadcast());
     let cfg = LinkConfig::new(Config::new("rekordbox-rs", i.mac, i.ip), i.broadcast());
     let link = Arc::new(std::sync::Mutex::new(Link::start(cfg).map_err(|e| format!("{e} (is rekordbox running?)"))?));
-    let (l, state) = (link.clone(), out.state_handle());
+    let follow: Arc<std::sync::Mutex<[Option<Option<u8>>; 2]>> = Arc::new(std::sync::Mutex::new([None, None]));
+    let (l, state, fw, tx) = (link.clone(), out.state_handle(), follow.clone(), out.sender());
     std::thread::spawn(move || {
         let mut clock = BeatClock::default();
+        let mut applied: [Option<std::time::Instant>; 2] = [None, None];
         loop {
             std::thread::sleep(Duration::from_millis(5));
             let s = *state.lock().unwrap();
@@ -258,9 +285,24 @@ fn start_link(iface: Option<&str>, out: &Output) -> Result<Arc<std::sync::Mutex<
             if let Some(p) = packet {
                 link.send_beat(&p);
             }
+            // external sync: re-align on every new beat packet of the followed device
+            let targets = *fw.lock().unwrap();
+            let ls = link.state();
+            for (d, t) in targets.iter().enumerate() {
+                let Some(dev) = t else { continue };
+                let Some(dev) = dev.or_else(|| ls.beats.keys().next().copied()) else { continue };
+                let at = ls.beat_at.get(&dev).copied();
+                if at.is_none() || at == applied[d] {
+                    continue;
+                }
+                if let Some((bpm, phase)) = external_beat(&ls, dev) {
+                    let _ = tx.send(Command::SyncExternal { deck: d, bpm, phase });
+                    applied[d] = at;
+                }
+            }
         }
     });
-    Ok(link)
+    Ok(LinkHandle { link, follow })
 }
 
 fn print_link(l: &rekordbox_formats::djlink_net::Link) {

@@ -39,7 +39,7 @@ cargo test --workspace
 
 77 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
 25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 9 für die MIDI-Eingangsverarbeitung, 5 für Pad-Dateien,
-4 für DeviceSQL, 20 für DJ Link (davon 2 über echte UDP-Sockets auf 127.0.0.1), 1 Doku-Test; dazu 55 Tests der Audio-Engine inkl. Effekten und Controller-Anbindung (`engine/`).
+4 für DeviceSQL, 21 für DJ Link (davon 2 über echte UDP-Sockets auf 127.0.0.1), 1 Doku-Test; dazu 56 Tests der Audio-Engine inkl. Effekten und Controller-Anbindung (`engine/`).
 
 ## CLI
 

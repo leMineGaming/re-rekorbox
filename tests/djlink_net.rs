@@ -66,3 +66,17 @@ fn beat_clock_emits_once_per_beat() {
     assert!(c.update("rbx", None, 120.0).is_none(), "stopped deck");
     assert!(c.update("rbx", Some(5.5), 120.0).is_some(), "restarting emits again");
 }
+
+#[test]
+fn external_beat_tempo_and_phase() {
+    use rekordbox_formats::djlink_net::{external_beat, LinkState};
+    let mut s = LinkState::default();
+    s.beats.insert(3, Beat::for_tempo("CDJ", 3, 120.0, 1));
+    s.beat_at.insert(3, Instant::now() - Duration::from_millis(125));
+    let (bpm, phase) = external_beat(&s, 3).unwrap();
+    assert_eq!(bpm, 120.0);
+    assert!((phase - 0.25).abs() < 0.05, "125 ms into a 500 ms beat: {phase}");
+    s.beat_at.insert(3, Instant::now() - Duration::from_secs(2));
+    assert!(external_beat(&s, 3).is_none(), "stale packet");
+    assert!(external_beat(&s, 4).is_none());
+}

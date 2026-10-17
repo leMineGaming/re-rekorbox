@@ -32,6 +32,7 @@
 //! sample 3 | samplestop 3 | svol 0.7   sampler slot 1..16 start / stop, sampler volume
 //! hp 1 on | mastercue on | cuelink on  headphone cue (output channels 3/4 on 4-channel devices)
 //! xfcurve 0.8                          crossfader curve 0 smooth .. 1 sharp
+//! extsync 1 128 0.25                   match deck 1 to 128 BPM, beat phase 0.25 (external sync)
 //! ```
 //! A script is `time:command; time:command; …` with times in seconds, e.g.
 //! `0:play 1; 4:bpm 2 124; 4:sync 2; 4:play 2; 8:xf 1`.
@@ -206,6 +207,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "mastercue" => MasterCue(on_off(a)?),
         "cuelink" => CueLink(on_off(a)?),
         "xfcurve" => CrossfaderCurve(num(a, "curve")?),
+        "extsync" => SyncExternal { deck: deck(a)?, bpm: num(b, "BPM")?, phase: num(c, "phase")? },
         "master" => match a {
             Some("auto") => SetMaster(None),
             Some("1" | "2") => SetMaster(Some(deck(a)?)),

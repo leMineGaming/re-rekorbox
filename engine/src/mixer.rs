@@ -78,6 +78,9 @@ pub enum Command {
     InstantDouble(usize),
     /// Sync master deck (`None` = automatic: the other deck).
     SetMaster(Option<usize>),
+    /// Match a deck to an external tempo (BPM) and beat phase (0..1 within the current beat), e.g.
+    /// from a DJ Link device.
+    SyncExternal { deck: usize, bpm: f64, phase: f64 },
     SamplerLoad(usize, Arc<Pcm>),
     SamplerStart(usize),
     SamplerStop(usize),
@@ -127,6 +130,7 @@ impl Command {
             MemoryStore(d) | MemoryCall(d, _) | MemoryDelete(d) | AutoCue(d, _) | Search(d, _) => Some(*d),
             KeyboardPress(d, _) | KeyboardRelease(d) | InstantDouble(d) => Some(*d),
             SetMaster(_) => None,
+            SyncExternal { deck, .. } => Some(*deck),
             HeadphoneCue(d, _) => Some(*d),
             SamplerLoad(..) | SamplerStart(_) | SamplerStop(_) | SamplerVolume(_) | MasterCue(_) | CueLink(_)
             | CrossfaderCurve(_) => None,
@@ -365,6 +369,7 @@ impl Mixer {
                 self.decks[d].copy_from(&other);
             }
             SetMaster(m) => self.sync_master = m.filter(|&m| m < DECKS),
+            SyncExternal { deck, bpm, phase } => self.align(deck, bpm, Some(phase)),
             SamplerLoad(slot, pcm) => self.sampler.load(slot, pcm),
             SamplerStart(slot) => self.sampler.start(slot),
             SamplerStop(slot) => self.sampler.stop(slot),
@@ -451,14 +456,24 @@ impl Mixer {
             Some(m) if m != deck => m,
             _ => 1 - deck,
         };
-        let (Some(g_self), Some(g_master), Some(master_bpm)) =
-            (self.decks[deck].grid, self.decks[other].grid, self.decks[other].bpm())
-        else {
+        let (Some(g_master), Some(master_bpm)) = (self.decks[other].grid, self.decks[other].bpm()) else {
             return;
         };
-        self.decks[deck].set_tempo(master_bpm / g_self.bpm);
-        if self.decks[deck].is_playing() && self.decks[other].is_playing() {
-            let master_phase = g_master.beat_at(self.decks[other].position_s()).rem_euclid(1.0);
+        let master_phase = (self.decks[other].is_playing())
+            .then(|| g_master.beat_at(self.decks[other].position_s()).rem_euclid(1.0));
+        self.align(deck, master_bpm, master_phase);
+    }
+
+    /// Set `deck` to `bpm` and, if it is playing and a phase is given, shift it by less than half a
+    /// beat so its beat phase matches (differences below 0.5 % of a beat are left alone, so repeated
+    /// external sync does not jump on every beat).
+    pub fn align(&mut self, deck: usize, bpm: f64, phase: Option<f64>) {
+        let Some(g_self) = self.decks[deck].grid else { return };
+        if bpm <= 0.0 {
+            return;
+        }
+        self.decks[deck].set_tempo(bpm / g_self.bpm);
+        if let (true, Some(master_phase)) = (self.decks[deck].is_playing(), phase) {
             let t = self.decks[deck].position_s();
             let own_phase = g_self.beat_at(t).rem_euclid(1.0);
             let mut diff = master_phase - own_phase;
@@ -467,7 +482,9 @@ impl Mixer {
             } else if diff < -0.5 {
                 diff += 1.0;
             }
-            self.decks[deck].seek_s(t + diff * g_self.beat_s());
+            if diff.abs() > 0.005 {
+                self.decks[deck].seek_s(t + diff * g_self.beat_s());
+            }
         }
     }
 
