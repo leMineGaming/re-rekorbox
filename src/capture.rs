@@ -189,7 +189,7 @@ pub fn tcp_streams(packets: &[Packet]) -> BTreeMap<((Ipv4Addr, u16), (Ipv4Addr, 
 }
 
 /// ONC RPC call summary (portmap 100000, NFS 100003, mount 100005).
-fn rpc_summary(p: &[u8]) -> Option<String> {
+pub fn rpc_summary(p: &[u8]) -> Option<String> {
     let xid = u32be(p, 0)?;
     let mtype = u32be(p, 4)?;
     if mtype == 1 {

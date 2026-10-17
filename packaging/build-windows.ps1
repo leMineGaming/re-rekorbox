@@ -34,7 +34,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 foreach ($exe in 'rbx-ui', 'rbx-play', 'rbx-analyze', 'rbx-selftest', 'rbf') {
     Copy-Item "target\dist\release\$exe.exe" $stage
 }
-foreach ($f in 'install.ps1', 'uninstall.ps1', 'Installieren.cmd', 'Selbsttest.cmd', 'Controller-Test.cmd', 'Link-Mitschnitt.cmd', 'link-capture.ps1', 'LIESMICH.txt') {
+foreach ($f in 'install.ps1', 'uninstall.ps1', 'Installieren.cmd', 'Selbsttest.cmd', 'Controller-Test.cmd', 'Link-Diagnose.cmd', 'LIESMICH.txt') {
     Copy-Item "packaging\windows\$f" $stage
 }
 Copy-Item 'ui\assets\icon.ico' $stage

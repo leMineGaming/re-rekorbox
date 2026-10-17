@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! rbx-selftest [--quick] [--soak SECONDS] [--tracks N] [--midi-listen SECONDS] [--leds]
-//!              [--midi-replay FILE] [--no-device] [--no-network] [--out DIR] [--open] [--pause]
+//!              [--midi-replay FILE] [--link-diag SECONDS] [--no-device] [--no-network] [--out DIR]
+//!              [--open] [--pause]
 //! ```
 //! Sections: audio quality (clicks, pitch, sync, echo, levels, routing), sound devices (callback timing
 //! with silence), performance, long run with random operation (offline and in real time), library
@@ -14,6 +15,9 @@
 //! mapping (XDJ-RX3) the report lists which controls sent something and which messages the mapping does
 //! not know, and the session is saved as a MIDI log. `--leds` runs a light over every LED of the unit.
 //! `--midi-replay FILE` plays a MIDI log through the controller layer and the mixer (offline).
+//! `--link-diag 240` only runs the Link diagnosis: joins Pro DJ Link (preferring a DJ unit's USB network
+//! adapter), offers the library like rekordbox, and records what the DJ unit does (devices, status,
+//! database requests, NFS / portmap calls) while you choose LINK on the unit and browse / load.
 //! `--open` opens the HTML report afterwards, `--pause` waits for Enter before closing (used when the
 //! UI starts the test in its own console window).
 
@@ -113,6 +117,7 @@ struct Opts {
     midi_listen_s: f64,
     leds: bool,
     midi_replay: Option<PathBuf>,
+    link_diag_s: f64,
     device: bool,
     network: bool,
     out: Option<PathBuf>,
@@ -132,6 +137,7 @@ fn main() -> ExitCode {
         midi_listen_s: val("--midi-listen").and_then(|v| v.parse().ok()).unwrap_or(0.0),
         leds: args.iter().any(|a| a == "--leds"),
         midi_replay: val("--midi-replay").map(PathBuf::from),
+        link_diag_s: val("--link-diag").and_then(|v| v.parse().ok()).unwrap_or(0.0),
         device: !args.iter().any(|a| a == "--no-device"),
         network: !args.iter().any(|a| a == "--no-network"),
         out: val("--out").map(PathBuf::from),
@@ -140,7 +146,12 @@ fn main() -> ExitCode {
     };
     println!("rekordbox-rs Selbsttest {} – {}", env!("CARGO_PKG_VERSION"), timestamp());
     let t0 = Instant::now();
-    let mut sections = vec![system(), quality()];
+    let mut sections = vec![system()];
+    if o.link_diag_s > 0.0 {
+        sections.push(link_diag(o.link_diag_s));
+        return finish(&o, &sections, t0);
+    }
+    sections.push(quality());
     if o.device {
         sections.push(devices(&o));
     }
@@ -152,7 +163,12 @@ fn main() -> ExitCode {
     if o.network {
         sections.push(network(&o));
     }
-    let report = render_report(&sections, t0.elapsed());
+    finish(&o, &sections, t0)
+}
+
+/// Write the reports, print the summary, open / pause as asked.
+fn finish(o: &Opts, sections: &[Section], t0: Instant) -> ExitCode {
+    let report = render_report(sections, t0.elapsed());
     let dir = o.out.clone().or_else(|| data_dir().map(|d| d.join("selftest"))).unwrap_or_else(|| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&dir);
     let name = format!("selftest-{}.md", timestamp().replace([' ', ':'], "-"));
@@ -160,7 +176,7 @@ fn main() -> ExitCode {
     let _ = std::fs::write(&path, &report);
     let _ = std::fs::write(dir.join("latest.md"), &report);
     let html = dir.join("latest.html");
-    let _ = std::fs::write(&html, render_html(&sections, t0.elapsed()));
+    let _ = std::fs::write(&html, render_html(sections, t0.elapsed()));
     let count = |s: Status| sections.iter().flat_map(|x| &x.items).filter(|i| i.status == s).count();
     println!(
         "\nErgebnis: {} OK, {} Warnungen, {} Fehler ({:.0} s)\nBericht: {}",
@@ -810,5 +826,128 @@ fn link_export_local() -> Section {
         Err(e) => s.add(Status::Fail, "Bibliothek per Link-Export-Protokoll", e.to_string()),
     }
     s.add(Status::Info, "Audio-Übertragung (NFS)", "noch nicht umgesetzt – Link-Mitschnitt.cmd mit rekordbox und dem Pult ausführen");
+    s
+}
+
+/// Link diagnosis with the DJ unit: join DJ Link, offer the library, log what the unit does.
+fn link_diag(secs: f64) -> Section {
+    use rbx_engine::linkexport::{catalog_of, LinkExport};
+    use rekordbox_formats::library::{default_anlz_root, default_music_root, Library};
+    use std::net::{TcpListener, UdpSocket};
+    let mut s = Section::new("Link-Diagnose mit dem Pult");
+    let log = data_dir().map(|d| rbx_engine::session::Log::with_file(&d.join("logs").join("link-diag.log"))).unwrap_or_default();
+    let out = Output::silent(44100);
+    let link = match rbx_engine::session::start_link(None, out.state_handle(), out.sender(), &log) {
+        Ok(l) => l,
+        Err(e) => {
+            s.add(Status::Fail, "DJ Link beitreten", format!("{e} – rekordbox schließen"));
+            return s;
+        }
+    };
+    s.add(Status::Ok, "DJ Link beigetreten", link.adapter.clone());
+    let mut roots: Vec<PathBuf> = default_anlz_root().into_iter().collect();
+    roots.extend(rbx_engine::analyze::default_output_root().filter(|p| p.is_dir()));
+    let music: Vec<PathBuf> = ui_setting("music").map(PathBuf::from).or_else(default_music_root).into_iter().collect();
+    let lib = Library::build_multi(&roots, &music);
+    let number = link.link.lock().unwrap().state().number.unwrap_or(17);
+    let server = match LinkExport::start(catalog_of(Some(&lib)), number, rekordbox_formats::dbserver::PORT_QUERY, log.clone()) {
+        Ok(x) => x,
+        Err(e) => {
+            s.add(Status::Fail, "Link-Export-Server", format!("{e} – Port 12523 belegt, rekordbox schließen"));
+            return s;
+        }
+    };
+    s.add(Status::Ok, "Bibliothek angeboten", format!("{} Tracks", server.track_count()));
+    // record portmap / NFS traffic (UDP) and connection attempts (TCP) without answering
+    let rpc = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    for port in [111u16, 2049] {
+        if let Ok(sock) = UdpSocket::bind(("0.0.0.0", port)) {
+            let (rpc, log) = (rpc.clone(), log.clone());
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 9000];
+                while let Ok((n, from)) = sock.recv_from(&mut buf) {
+                    let line = format!("UDP {port} von {from}: {}", rekordbox_formats::capture::rpc_summary(&buf[..n]).unwrap_or_else(|| format!("{n} Bytes")));
+                    log.say(line.clone());
+                    rpc.lock().unwrap().push(line);
+                }
+            });
+        } else {
+            s.add(Status::Warn, format!("UDP-Port {port}"), "belegt (läuft rekordbox oder ein NFS-Dienst?)");
+        }
+        if let Ok(l) = TcpListener::bind(("0.0.0.0", port)) {
+            let (rpc, log) = (rpc.clone(), log.clone());
+            std::thread::spawn(move || {
+                for c in l.incoming().flatten() {
+                    let line = format!("TCP {port}: Verbindung von {:?}", c.peer_addr().ok());
+                    log.say(line.clone());
+                    rpc.lock().unwrap().push(line);
+                }
+            });
+        }
+    }
+    println!();
+    println!("Jetzt am XDJ-RX3: Quelle LINK bzw. rekordbox-rs wählen, durch die Bibliothek blättern,");
+    println!("einen Track laden und PLAY drücken. Läuft {secs:.0} s (oder vorher Enter drücken).");
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            // no console input (e.g. started in the background): run for the full time
+            if matches!(std::io::stdin().read_line(&mut line), Ok(n) if n > 0) {
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
+    let t = Instant::now();
+    let mut seen_devices = std::collections::BTreeMap::new();
+    let mut last_status: std::collections::BTreeMap<u8, (u32, u32)> = Default::default();
+    while t.elapsed().as_secs_f64() < secs && !done.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(200));
+        let st = link.link.lock().unwrap().state();
+        for d in &st.devices {
+            if seen_devices.insert(d.number, (d.name.clone(), d.ip, d.kind)).is_none() {
+                log.say(format!("Gerät im Netz: #{} {} ({}) Art {}", d.number, d.name, d.ip, d.kind));
+            }
+        }
+        for (n, c) in &st.status {
+            let now = (c.play_state, c.track_ref);
+            if last_status.insert(*n, now) != Some(now) {
+                log.say(format!("Status #{n}: Abspielzustand {:#x}, Track {} (Quelle {:02X?}), Tempo {:?}", c.play_state, c.track_ref, c.load_info, c.tempo));
+            }
+        }
+    }
+    let st = link.link.lock().unwrap().state();
+    s.add(
+        if seen_devices.is_empty() { Status::Fail } else { Status::Ok },
+        "Geräte im DJ-Link-Netz",
+        if seen_devices.is_empty() { "keine – ist das Pult per USB/LAN verbunden und eingeschaltet?".into() } else { seen_devices.iter().map(|(n, (name, ip, k))| format!("#{n} {name} ({ip}, Art {k})")).collect::<Vec<_>>().join(", ") },
+    );
+    s.add(Status::Info, "Eigene Nummer", format!("{:?}", st.number));
+    let pq = server.port_queries.load(std::sync::atomic::Ordering::Relaxed);
+    let conns = server.connections.load(std::sync::atomic::Ordering::Relaxed);
+    s.add(
+        if pq > 0 { Status::Ok } else { Status::Warn },
+        "Pult fragt die Bibliothek ab",
+        format!("{pq} Port-Abfragen, {conns} Datenbank-Verbindungen"),
+    );
+    let reqs: Vec<String> = server.requests.lock().unwrap().iter().map(|(k, n)| format!("{k:#06x} {} ×{n}", rekordbox_formats::dbserver::kind::name(*k))).collect();
+    s.add(Status::Info, "Anfragen des Pults", if reqs.is_empty() { "keine".into() } else { reqs.join(", ") });
+    let rpc = rpc.lock().unwrap().clone();
+    s.add(Status::Info, "NFS/Portmap-Zugriffe", if rpc.is_empty() { "keine".into() } else { rpc.iter().take(30).cloned().collect::<Vec<_>>().join(" | ") });
+    let status: Vec<String> = st.status.iter().map(|(n, c)| format!("#{n}: Zustand {:#x}, Track {}, Quelle {:02X?}, ext {:?}", c.play_state, c.track_ref, c.load_info, c.ext2)).collect();
+    s.add(Status::Info, "Status der Pult-Decks", if status.is_empty() { "keiner empfangen".into() } else { status.join("; ") });
+    for ((port, kind, from), (n, last)) in &st.received {
+        let hex: Vec<String> = last.iter().take(0x60).map(|b| format!("{b:02X}")).collect();
+        let line = format!("{n} × von {from}, {} Bytes, zuletzt: {}", last.len(), hex.join(" "));
+        log.say(format!("Empfangen Port {port} Typ {kind:#04x}: {line}"));
+        s.add(Status::Info, format!("Empfangen Port {port}, Typ {kind:#04x}"), line);
+    }
+    for e in st.events.iter().rev().take(10) {
+        s.add(Status::Info, "DJ-Link-Ereignis", format!("{e:?}"));
+    }
+    if let Some(d) = data_dir() {
+        s.add(Status::Info, "Ausführliches Protokoll", d.join("logs").join("link-diag.log").display().to_string());
+    }
     s
 }

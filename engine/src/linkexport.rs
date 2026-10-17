@@ -190,7 +190,7 @@ pub fn preview_blob(t: &LibTrack) -> Vec<u8> {
 }
 
 /// The database connection loop: greeting, then requests until the player hangs up.
-fn serve(mut s: TcpStream, catalog: Arc<RwLock<Catalog>>, own_number: u8, log: Log) -> std::io::Result<()> {
+fn serve(mut s: TcpStream, catalog: Arc<RwLock<Catalog>>, own_number: u8, log: Log, requests: Requests) -> std::io::Result<()> {
     s.set_read_timeout(Some(Duration::from_secs(60)))?;
     let mut greet = [0u8; 5];
     s.read_exact(&mut greet)?;
@@ -207,6 +207,8 @@ fn serve(mut s: TcpStream, catalog: Arc<RwLock<Catalog>>, own_number: u8, log: L
         }
         buf.drain(..used);
         for m in msgs {
+            log.say(format!("Link Export <- {peer:?}{}", rekordbox_formats::capture::describe(&m)));
+            *requests.lock().unwrap().entry(m.kind).or_default() += 1;
             let replies = handle(&m, &catalog.read().unwrap(), own_number, &mut pending);
             if m.kind == kind::DROP {
                 return Ok(());
@@ -288,8 +290,15 @@ pub fn handle(m: &Message, c: &Catalog, own_number: u8, pending: &mut Vec<Entry>
     }
 }
 
+/// Requests received per message type.
+pub type Requests = Arc<std::sync::Mutex<BTreeMap<u16, usize>>>;
+
 /// The running server.
 pub struct LinkExport {
+    /// Requests per message type (for diagnostics).
+    pub requests: Requests,
+    /// Port queries answered.
+    pub port_queries: Arc<AtomicUsize>,
     pub db_port: u16,
     /// Port of the port query (12523 unless another was asked for, e.g. 0 in tests).
     pub query_port: u16,
@@ -308,9 +317,11 @@ impl LinkExport {
         let stop = Arc::new(AtomicBool::new(false));
         let connections = Arc::new(AtomicUsize::new(0));
         let catalog = Arc::new(RwLock::new(catalog));
+        let requests: Requests = Default::default();
+        let port_queries = Arc::new(AtomicUsize::new(0));
         log.say(format!("Link Export: Datenbank-Server auf Port {db_port}, Port-Abfrage auf {query_port}"));
         {
-            let (stop, log) = (stop.clone(), log.clone());
+            let (stop, log, pq) = (stop.clone(), log.clone(), port_queries.clone());
             query.set_nonblocking(true)?;
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
@@ -320,6 +331,8 @@ impl LinkExport {
                             let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
                             let mut req = [0u8; 19];
                             if s.read_exact(&mut req).is_ok() && req.as_slice() == dbserver::PORT_QUERY_REQUEST {
+                                log.say(format!("Link Export: Port-Abfrage von {:?}", s.peer_addr().ok()));
+                                pq.fetch_add(1, Ordering::Relaxed);
                                 let _ = s.write_all(&db_port.to_be_bytes());
                             } else {
                                 log.say("Link Export: unbekannte Port-Abfrage");
@@ -331,7 +344,7 @@ impl LinkExport {
             });
         }
         {
-            let (stop, conns, cat) = (stop.clone(), connections.clone(), catalog.clone());
+            let (stop, conns, cat, reqs) = (stop.clone(), connections.clone(), catalog.clone(), requests.clone());
             db.set_nonblocking(true)?;
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
@@ -340,9 +353,9 @@ impl LinkExport {
                             let _ = s.set_nonblocking(false);
                             conns.fetch_add(1, Ordering::Relaxed);
                             log.say(format!("Link Export: Verbindung von {addr}"));
-                            let (cat, log) = (cat.clone(), log.clone());
+                            let (cat, log, reqs) = (cat.clone(), log.clone(), reqs.clone());
                             std::thread::spawn(move || {
-                                if let Err(e) = serve(s, cat, own_number, log.clone()) {
+                                if let Err(e) = serve(s, cat, own_number, log.clone(), reqs) {
                                     log.say(format!("Link Export: Verbindung {addr} beendet: {e}"));
                                 }
                             });
@@ -352,7 +365,7 @@ impl LinkExport {
                 }
             });
         }
-        Ok(LinkExport { db_port, query_port, stop, connections, catalog })
+        Ok(LinkExport { requests, port_queries, db_port, query_port, stop, connections, catalog })
     }
 
     /// Replace the offered library (e.g. after new analyses).

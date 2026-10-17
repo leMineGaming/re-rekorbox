@@ -75,6 +75,8 @@ pub struct LinkState {
     pub events: Vec<Event>,
     /// Datagrams that could not be decoded.
     pub errors: u64,
+    /// Received datagrams per (port, packet type, sender): count and the last datagram (diagnostics).
+    pub received: BTreeMap<(u16, u8, Ipv4Addr), (u64, Vec<u8>)>,
 }
 
 pub struct Link {
@@ -83,6 +85,15 @@ pub struct Link {
     thread: Option<JoinHandle<()>>,
     beat_socket: UdpSocket,
     beat_targets: Vec<SocketAddr>,
+}
+
+/// Count a received datagram by port, type byte (0x0A) and sender; keep the last one.
+fn record(state: &Mutex<LinkState>, port: u16, from: Ipv4Addr, b: &[u8]) {
+    let kind = b.get(0x0A).copied().unwrap_or(0xFF);
+    let mut s = state.lock().unwrap();
+    let e = s.received.entry((port, kind, from)).or_insert((0, Vec::new()));
+    e.0 += 1;
+    e.1 = b.to_vec();
 }
 
 fn bind(ip: Ipv4Addr, port: u16) -> io::Result<UdpSocket> {
@@ -103,6 +114,7 @@ impl Link {
         let (st, sp) = (state.clone(), stop.clone());
         let announce_targets = cfg.announce_targets();
         let announce_port = cfg.announce_port;
+        let cfg_announce_port = cfg.announce_port;
         let mut participant = Participant::new(cfg.participant.clone());
         let thread = std::thread::spawn(move || {
             let t0 = Instant::now();
@@ -130,14 +142,18 @@ impl Link {
                 while let Ok((n, from)) = announce.recv_from(&mut buf) {
                     busy = true;
                     if let SocketAddr::V4(v4) = from {
+                        record(&st, cfg_announce_port, *v4.ip(), &buf[..n]);
                         ports.insert(*v4.ip(), v4.port());
                         let out = participant.receive(now(), *v4.ip(), &buf[..n]);
                         send(out, &ports);
                     }
                 }
                 for (sock, port) in [(&beat, PORT_BEAT), (&status, PORT_STATUS)] {
-                    while let Ok((n, _)) = sock.recv_from(&mut buf) {
+                    while let Ok((n, from)) = sock.recv_from(&mut buf) {
                         busy = true;
+                        if let SocketAddr::V4(v4) = from {
+                            record(&st, port, *v4.ip(), &buf[..n]);
+                        }
                         let mut s = st.lock().unwrap();
                         match decode(port, &buf[..n]) {
                             Ok(Packet::Beat(b)) => {

@@ -28,7 +28,7 @@ impl Interface {
 }
 
 /// Pick an interface: by (part of) name, description or IP; else the first adapter that is up and not
-/// loopback, preferring private addresses, then link-local ones (169.254.x.x – what DJ gear and the PC
+/// loopback, preferring a DJ unit's own USB network adapter (Pioneer DJ / AlphaTheta), then private addresses, then link-local ones (169.254.x.x – what DJ gear and the PC
 /// use on a direct cable without DHCP), then any other.
 pub fn choose<'a>(list: &'a [Interface], wanted: Option<&str>) -> Option<&'a Interface> {
     if let Some(w) = wanted {
@@ -38,9 +38,15 @@ pub fn choose<'a>(list: &'a [Interface], wanted: Option<&str>) -> Option<&'a Int
         });
     }
     let usable: Vec<&Interface> = list.iter().filter(|i| i.up && !i.loopback).collect();
+    // a DJ unit connected by USB brings its own network adapter ("Pioneer DJ Network Adapter")
+    let dj = |i: &&&Interface| {
+        let d = i.description.to_lowercase();
+        d.contains("pioneer") || d.contains("alphatheta")
+    };
     usable
         .iter()
-        .find(|i| i.ip.is_private())
+        .find(dj)
+        .or_else(|| usable.iter().find(|i| i.ip.is_private()))
         .or_else(|| usable.iter().find(|i| i.ip.is_link_local()))
         .or_else(|| usable.first())
         .copied()
