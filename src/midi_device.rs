@@ -2,7 +2,8 @@
 //! callback). Only short messages are received; System Exclusive is ignored.
 //!
 //! [`list_inputs`]/[`list_outputs`] enumerate devices, [`InputPort::open`] starts receiving and delivers
-//! `(packed message, timestamp ms)` pairs through a channel.
+//! `(packed message, timestamp ms)` pairs through a channel; [`OutputPort`] sends short messages
+//! (LEDs).
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -43,6 +44,10 @@ extern "system" {
     fn midiInStop(handle: Handle) -> u32;
     fn midiInReset(handle: Handle) -> u32;
     fn midiInClose(handle: Handle) -> u32;
+    fn midiOutOpen(handle: *mut Handle, id: u32, callback: usize, instance: usize, flags: u32) -> u32;
+    fn midiOutShortMsg(handle: Handle, msg: u32) -> u32;
+    fn midiOutReset(handle: Handle) -> u32;
+    fn midiOutClose(handle: Handle) -> u32;
 }
 
 const CALLBACK_FUNCTION: u32 = 0x0003_0000;
@@ -127,6 +132,43 @@ impl Drop for InputPort {
             midiInReset(self.handle);
             midiInClose(self.handle);
             drop(Box::from_raw(self.sender));
+        }
+    }
+}
+
+/// An open MIDI output; closed on drop.
+pub struct OutputPort {
+    handle: Handle,
+}
+
+// SAFETY: a WinMM output handle may be used from any thread; calls are not interleaved here because
+// `send` takes `&self` on a value owned by one thread at a time.
+unsafe impl Send for OutputPort {}
+
+impl OutputPort {
+    pub fn open(index: u32) -> Result<OutputPort, String> {
+        let mut handle: Handle = 0;
+        let r = unsafe { midiOutOpen(&mut handle, index, 0, 0, 0) };
+        if r != 0 {
+            return Err(format!("midiOutOpen({index}) failed with code {r}"));
+        }
+        Ok(OutputPort { handle })
+    }
+
+    /// Send a packed short message (`status | d1 << 8 | d2 << 16`).
+    pub fn send(&self, packed: u32) -> Result<(), String> {
+        match unsafe { midiOutShortMsg(self.handle, packed) } {
+            0 => Ok(()),
+            r => Err(format!("midiOutShortMsg failed with code {r}")),
+        }
+    }
+}
+
+impl Drop for OutputPort {
+    fn drop(&mut self) {
+        unsafe {
+            midiOutReset(self.handle);
+            midiOutClose(self.handle);
         }
     }
 }

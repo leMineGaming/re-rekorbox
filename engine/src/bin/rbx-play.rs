@@ -5,7 +5,11 @@
 //! rbx-play play <file1> [file2] [--device NAME]       live playback, commands on stdin (see control.rs)
 //! rbx-play render <out.wav> <seconds> <file1|tone|click:BPM> [file2|…] [--script "0:play 1; …"]
 //! rbx-play tone [seconds]                             440 Hz test tone on the default device
+//! rbx-play midi-coverage <mapping.csv>                which mapping functions the engine handles
 //! ```
+//! `play` options: `--device NAME` (audio output), `--midi MAPPING.csv` (controller; MIDI in/out are
+//! found by the mapping's device name, override with `--midi-in NAME` / `--midi-out NAME`). With a
+//! mapping loaded, `midi B0 22 41` on stdin injects a message as if the controller had sent it.
 //! Sources: an audio file path, `tone` (440 Hz sine) or `click:BPM` (click track) – the latter two
 //! allow testing without music files.
 
@@ -16,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rbx_engine::control;
+use rbx_engine::controller::Controller;
 use rbx_engine::deck::Grid;
 use rbx_engine::mixer::{Command, Mixer};
 use rbx_engine::output::{list_devices, Output};
@@ -33,6 +38,7 @@ fn main() -> ExitCode {
         }
         ["play", rest @ ..] => play(rest),
         ["render", out, secs, rest @ ..] => render(Path::new(out), secs, rest),
+        ["midi-coverage", m] => coverage(Path::new(m)),
         ["tone", rest @ ..] => tone(rest.first().and_then(|s| s.parse().ok()).unwrap_or(2.0)),
         _ => Err("usage: rbx-play devices | play <file1> [file2] [--device NAME] | \
                   render <out.wav> <seconds> <src1> [src2] [--script S] | tone [seconds]"
@@ -124,7 +130,11 @@ fn play(rest: &[&str]) -> Result<(), String> {
         let (pcm, grid) = source(s, out.sample_rate)?;
         out.send(Command::Load { deck: d, pcm, grid });
     }
-    println!("commands: play 1, cue 1, hot 1 1, loop 1 4, tempo 1 0.2, sync 2, xf 0, load 2 <file>, state, quit");
+    let ctl = match opts.iter().find(|(k, _)| *k == "midi") {
+        Some((_, m)) => Some(start_controller(m, &opts, &out)?),
+        None => None,
+    };
+    println!("commands: play 1, cue 1, hot 1 1, loop 1 4, tempo 1 0.2, sync 2, xf 0, load 2 <file>, midi 90 00 7F, state, quit");
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|e| e.to_string())?;
         let line = line.trim();
@@ -132,6 +142,20 @@ fn play(rest: &[&str]) -> Result<(), String> {
             "" => continue,
             "quit" | "q" | "exit" => break,
             "state" | "s" => print_state(&out),
+            l if l.starts_with("midi ") => match (&ctl, parse_hex(&l[5..])) {
+                (Some(c), Ok(bytes)) => match rekordbox_formats::midi_input::MidiMessage::from_bytes(&bytes, 0.0) {
+                    Some(msg) => {
+                        let cmds = c.controller.lock().unwrap().handle(&msg);
+                        println!("-> {cmds:?}");
+                        for cmd in cmds {
+                            out.send(cmd);
+                        }
+                    }
+                    None => eprintln!("first byte must be a status byte"),
+                },
+                (None, _) => eprintln!("start with --midi <mapping.csv> to use the controller layer"),
+                (_, Err(e)) => eprintln!("{e}"),
+            },
             l if l.starts_with("load ") => {
                 let mut p = l.splitn(3, ' ').skip(1);
                 let d = p.next().and_then(|d| d.parse::<usize>().ok()).filter(|d| (1..=2).contains(d));
@@ -159,4 +183,99 @@ fn tone(seconds: f64) -> Result<(), String> {
     out.send(Command::Play(0));
     std::thread::sleep(Duration::from_secs_f64(seconds));
     Ok(())
+}
+
+fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
+    s.split_whitespace().map(|h| u8::from_str_radix(h, 16).map_err(|_| format!("{h}: not a hex byte"))).collect()
+}
+
+fn load_mapping(path: &Path) -> Result<rekordbox_formats::midi::MidiMapping, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let m = rekordbox_formats::midi::parse(&text);
+    if !m.is_valid() {
+        return Err(format!("{}: not a version 1 mapping file", path.display()));
+    }
+    Ok(m)
+}
+
+fn coverage(path: &Path) -> Result<(), String> {
+    let c = Controller::new(load_mapping(path)?);
+    let (yes, no) = c.coverage();
+    println!("{}: {} functions handled, {} not handled", c.mapping().device, yes.len(), no.len());
+    println!("handled:     {}", yes.into_iter().collect::<Vec<_>>().join(", "));
+    println!("not handled: {}", no.into_iter().collect::<Vec<_>>().join(", "));
+    Ok(())
+}
+
+/// Controller running in the background: MIDI input thread and LED refresh thread.
+struct ControllerHandle {
+    controller: Arc<std::sync::Mutex<Controller>>,
+    #[cfg(windows)]
+    _input: Option<rekordbox_formats::midi_device::InputPort>,
+}
+
+fn start_controller(mapping: &str, opts: &[(&str, &str)], out: &Output) -> Result<ControllerHandle, String> {
+    let m = load_mapping(Path::new(mapping))?;
+    let device = m.device.clone();
+    let controller = Arc::new(std::sync::Mutex::new(Controller::new(m)));
+    let (yes, no) = controller.lock().unwrap().coverage();
+    println!("controller {device:?}: {} functions handled, {} not (see midi-coverage)", yes.len(), no.len());
+    #[cfg(windows)]
+    {
+        use rekordbox_formats::midi_device::{list_inputs, list_outputs, InputPort, OutputPort};
+        use rekordbox_formats::midi_input::MidiMessage;
+        let pick = |list: Vec<rekordbox_formats::midi_device::DeviceInfo>, key: &str| {
+            let want = opts.iter().find(|(k, _)| *k == key).map_or(device.as_str(), |(_, v)| *v).to_lowercase();
+            list.into_iter().find(|d| d.name.to_lowercase().contains(&want))
+        };
+        let mut input = None;
+        match pick(list_inputs(), "midi-in") {
+            Some(d) => {
+                let (port, rx) = InputPort::open(d.index)?;
+                println!("MIDI in: {}", d.name);
+                let (c, tx) = (controller.clone(), out.sender());
+                std::thread::spawn(move || {
+                    for (packed, ms) in rx {
+                        if let Some(msg) = MidiMessage::from_packed(packed, f64::from(ms) / 1000.0) {
+                            for cmd in c.lock().unwrap().handle(&msg) {
+                                let _ = tx.send(cmd);
+                            }
+                        }
+                    }
+                });
+                input = Some(port);
+            }
+            None => println!("MIDI in: no device matching {device:?} found (use `midi ..` to simulate)"),
+        }
+        match pick(list_outputs(), "midi-out") {
+            Some(d) => {
+                let port = OutputPort::open(d.index)?;
+                println!("MIDI out (LEDs): {}", d.name);
+                let (c, state) = (controller.clone(), out.state_handle());
+                std::thread::spawn(move || {
+                    let mut last = std::collections::HashMap::new();
+                    loop {
+                        let s = *state.lock().unwrap();
+                        for led in c.lock().unwrap().leds(&s) {
+                            let key = (led.status, led.data1);
+                            if last.get(&key) != Some(&led.value) {
+                                if port.send(led.packed()).is_err() {
+                                    return;
+                                }
+                                last.insert(key, led.value);
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(40));
+                    }
+                });
+            }
+            None => println!("MIDI out: no device matching {device:?} found (no LED feedback)"),
+        }
+        return Ok(ControllerHandle { controller, _input: input });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = opts;
+        Ok(ControllerHandle { controller })
+    }
 }

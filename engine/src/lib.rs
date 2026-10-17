@@ -2,6 +2,7 @@
 
 pub mod deck;
 pub mod control;
+pub mod controller;
 pub mod mixer;
 pub mod output;
 pub mod pcm;

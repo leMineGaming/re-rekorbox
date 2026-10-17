@@ -36,6 +36,10 @@ pub enum Command {
     Jog(usize, i32),
     SeekFraction(usize, f64),
     SeekSeconds(usize, f64),
+    /// Move by seconds relative to the current position.
+    SeekBy(usize, f64),
+    /// Jump by beats (negative = back).
+    BeatJump(usize, f64),
     /// Channel fader 0..1.
     Volume(usize, f32),
     /// Trim gain (linear, 1.0 = 0 dB).
@@ -102,6 +106,7 @@ impl Mixer {
             | ReloopExit(d) | Sync(d) => Some(*d),
             HotCuePress(d, _) | HotCueRelease(d, _) | HotCueDelete(d, _) | TempoRange(d, _) => Some(*d),
             BeatLoop(d, _) | LoopScale(d, _) | TempoFader(d, _) | SeekFraction(d, _) | SeekSeconds(d, _) => Some(*d),
+            SeekBy(d, _) | BeatJump(d, _) => Some(*d),
             JogTouch(d, _) | Quantize(d, _) => Some(*d),
             Jog(d, _) => Some(*d),
             Volume(d, _) | Trim(d, _) => Some(*d),
@@ -132,6 +137,8 @@ impl Mixer {
             Jog(d, delta) => self.decks[d].jog(delta),
             SeekFraction(d, f) => self.decks[d].seek_fraction(f),
             SeekSeconds(d, s) => self.decks[d].seek_s(s),
+            SeekBy(d, s) => self.decks[d].seek_by(s),
+            BeatJump(d, b) => self.decks[d].beat_jump(b),
             Volume(d, v) => self.decks[d].volume = v.clamp(0.0, 1.0),
             Trim(d, v) => self.decks[d].trim = v.clamp(0.0, 4.0),
             Quantize(d, q) => self.decks[d].quantize = q,

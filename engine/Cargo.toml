@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 symphonia = { version = "0.5", default-features = false, features = ["flac", "mp3", "pcm", "wav", "aac", "isomp4", "ogg", "vorbis"] }
 cpal = "0.15"
+rekordbox-formats = { path = ".." }
 
 [[bin]]
 name = "rbx-play"

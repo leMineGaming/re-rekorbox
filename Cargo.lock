@@ -601,6 +601,7 @@ name = "rbx-engine"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "rekordbox-formats",
  "symphonia",
 ]
 

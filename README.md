@@ -23,7 +23,7 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `midi-route`, `midi-decode`, `midi-devices`, `midi-monitor`, `pad`, `edb`, `djlink-listen` | – |
 
 Dazu im Workspace: **[`engine/`](engine/README.md)** – Zwei-Deck-Audio-Engine (`rbx-engine`, Programm `rbx-play`),
-Eigenentwurf für das MVP, nicht aus dem rekordbox-Code abgeleitet.
+Eigenentwurf für das MVP, nicht aus dem rekordbox-Code abgeleitet; steuerbar per DJ-Controller (`--midi`).
 
 ## Bauen und testen
 
@@ -35,7 +35,7 @@ cargo test --workspace
 
 77 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
 25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 9 für die MIDI-Eingangsverarbeitung, 5 für Pad-Dateien,
-4 für DeviceSQL, 10 für DJ Link, 1 Doku-Test; dazu 13 Tests der Audio-Engine (`engine/`).
+4 für DeviceSQL, 10 für DJ Link, 1 Doku-Test; dazu 20 Tests der Audio-Engine inkl. Controller-Anbindung (`engine/`).
 
 ## CLI
 

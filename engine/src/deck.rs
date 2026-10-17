@@ -68,6 +68,10 @@ pub struct DeckState {
     pub bpm: Option<f64>,
     pub cue_s: f64,
     pub looping: bool,
+    /// Paused exactly on the cue point.
+    pub at_cue: bool,
+    /// Which hot cue slots are set.
+    pub hot_cues: [bool; HOT_CUES],
 }
 
 #[derive(Debug, Clone)]
@@ -388,6 +392,32 @@ impl Deck {
         }
     }
 
+    /// Jump by `beats` (negative = back) using the grid, or 120 BPM without one. An active loop
+    /// moves along with the position.
+    pub fn beat_jump(&mut self, beats: f64) {
+        if !self.is_loaded() {
+            return;
+        }
+        let beat_s = self.grid.map_or(0.5, |g| g.beat_s());
+        let delta = self.to_frames(beats * beat_s);
+        let new = (self.pos + delta).clamp(0.0, self.len());
+        let moved = new - self.pos;
+        self.pos = new;
+        self.scratch_target = new;
+        if let Some(l) = &mut self.lp {
+            if l.active {
+                l.start += moved;
+                l.end += moved;
+            }
+        }
+    }
+
+    /// Move the position by `seconds` (search buttons / search wheel).
+    pub fn seek_by(&mut self, seconds: f64) {
+        let t = self.position_s() + seconds;
+        self.seek_s(t);
+    }
+
     // --- jog -------------------------------------------------------------------------------
 
     /// Jog top touched / released (vinyl mode: touching holds the platter for scratching).
@@ -426,6 +456,8 @@ impl Deck {
             bpm: self.bpm(),
             cue_s: self.cue_s(),
             looping: self.lp.is_some_and(|l| l.active),
+            at_cue: self.is_loaded() && !self.playing && (self.pos - self.cue).abs() < 1.0,
+            hot_cues: std::array::from_fn(|i| self.hot_cues[i].is_some()),
         }
     }
 

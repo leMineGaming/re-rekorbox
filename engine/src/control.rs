@@ -10,6 +10,7 @@
 //! bpm 1 128 [0.12]                     set grid: BPM and first beat in seconds
 //! touch 1 | release 1 | jog 1 -40      jog wheel
 //! seek 1 0.5 | at 1 63.2               needle (fraction) / absolute seconds
+//! skip 1 -2.5 | jump 1 4               relative seconds / beat jump (negative = back)
 //! vol 1 0.8 | trim 1 1.2 | quant 1 on  channel settings
 //! sync 2                               match deck 2 to deck 1
 //! xf -1 | master 0.9                   crossfader −1..1, master gain
@@ -84,6 +85,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "jog" => Jog(deck(a)?, num(b, "jog delta")?),
         "seek" => SeekFraction(deck(a)?, num(b, "fraction")?),
         "at" => SeekSeconds(deck(a)?, num(b, "seconds")?),
+        "skip" => SeekBy(deck(a)?, num(b, "seconds")?),
+        "jump" => BeatJump(deck(a)?, num(b, "beats")?),
         "vol" => Volume(deck(a)?, num(b, "volume")?),
         "trim" => Trim(deck(a)?, num(b, "trim")?),
         "quant" => Quantize(deck(a)?, matches!(b, Some("on" | "1" | "true"))),

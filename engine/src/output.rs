@@ -80,6 +80,11 @@ impl Output {
         self.commands.clone()
     }
 
+    /// Shared handle to the latest state (can be moved to another thread).
+    pub fn state_handle(&self) -> Arc<Mutex<MixerState>> {
+        self.state.clone()
+    }
+
     pub fn state(&self) -> MixerState {
         *self.state.lock().unwrap()
     }

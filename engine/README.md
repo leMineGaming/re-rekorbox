@@ -13,6 +13,7 @@ nachahmt, steht das am jeweiligen Code.
 | `mixer` | 2 Decks, Kanalfader, Trim, Crossfader (konstante Leistung), Master mit Soft-Clipping, **Sync** (Tempo + Beat-Phase), Offline-Rendern |
 | `output` | Echtzeit-Ausgabe über das Standard-Audiogerät (`cpal`, unter Windows WASAPI); Steuerung per `Command`-Kanal, Zustand per Snapshot |
 | `control` | Textbefehle und zeitgesteuerte Skripte (`0:play 1; 4:sync 2; …`) |
+| `controller` | **DJ-Controller-Anbindung (MVP-Schritt 3)**: MIDI → Steuerereignis über die Mapping-CSV (`rekordbox_formats::midi_input`, SPEC §5f-2) → Engine-Befehl; LED-Rückmeldung über die Ausgabespalten des Mappings |
 
 ## Ausprobieren
 
@@ -28,9 +29,32 @@ Im `play`-Modus Befehle zeilenweise eingeben: `play 1`, `cue 1` / `cueup 1`, `ho
 `vol 2 0.8`, `seek 1 0.5`, `load 2 <datei>`, `state`, `quit` (vollständige Liste in `src/control.rs`).
 Quellen statt Dateien: `tone` (440 Hz) und `click:BPM` (Click-Track mit Beatgrid).
 
+## DJ-Controller (z. B. Pioneer DJ XDJ-RX3)
+
+```bash
+cargo run --release -p rbx-engine --bin rbx-play -- midi-coverage "C:\Program Filesekordboxekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"
+cargo run --release -p rbx-engine --bin rbx-play -- play track1.flac track2.flac --midi "C:\Program Filesekordboxekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"
+```
+
+MIDI-Ein- und -Ausgang werden über den Gerätenamen aus dem Mapping gefunden (`--midi-in`/`--midi-out NAME`
+zum Überschreiben). Ohne Gerät lassen sich Nachrichten mit `midi 90 00 7F` eintippen.
+
+Beim XDJ-RX3 sind 53 Funktionen angebunden: PlayPause, Cue, Hot-Cue-Pads 1–8 (anspringen, mit Shift löschen),
+Beat-Loop-Pads (¼ … 32 Beats), Beat-Jump-Pads (1/2/4/8 Beats zurück/vor), Loop In/Out/Reloop, Sync,
+Quantize, Tempo-Bereich, Tempo-Fader (14 Bit), Jog (Scratch bei Berührung im Vinyl-Modus, sonst Pitch-Bend),
+Suchrad, Jog-Touch, Vinyl, Needle-Search, Kanalfader, Gain (±12 dB), Crossfader. LEDs: Play, Cue,
+Hot-Cue-Pads, Loop, Sync (bei gleichem Tempo), Quantize, Vinyl (Wert 0x7F/0x00).
+
+Nicht angebunden (fehlt in der Engine oder gehört zu späteren Schritten): EQ, Effekte (Beat-/Sound-Color-FX,
+Pad-FX), Sampler, Keyboard/Key-Shift, Slip, Reverse, Master Tempo, Kopfhörer-Cue, Bibliothek
+(Browse/Load/Track). `JogPitchBend` liegt auf derselben Nachricht wie `JogScratch` und wird absichtlich nicht
+doppelt ausgewertet. Eigene Festlegungen in `ControllerConfig`: Pad-Größen, Gain-Bereich, Suchschritt,
+Tempo-Richtung. **Am echten Gerät noch nicht geprüft** – v. a. Tempo-Fader-Richtung und Pad-LED-Farben.
+
 ## Tests
 
-`cargo test -p rbx-engine`: 13 Tests mit synthetischem Audio (kein Audiogerät nötig): WAV-Round-Trip
+`cargo test -p rbx-engine`: 20 Tests (7 davon für die Controller-Anbindung mit synthetischem Mapping und
+synthetischen MIDI-Nachrichten); davon 13 mit synthetischem Audio (kein Audiogerät nötig): WAV-Round-Trip
 durch den Decoder, Interpolation, Geschwindigkeit bei Tempo und anderer Abtastrate, Pegel/Declick/Track-Ende,
 CUE, Hot Cues, Quantisierung, Loops, Sync (Tempo und Phase, auch nach 5 s), Bereichserweiterung, Jog,
 Crossfader/Clipping, Befehle und Skripte.
