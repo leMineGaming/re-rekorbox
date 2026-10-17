@@ -229,6 +229,17 @@ impl MappingEntry {
         control_type_code(&self.type_text, device)
     }
 
+    /// True for 14-bit controls (`Slider`, `Knob`, `KnobSliderHiRes`: codes 4, 5, 7, 8). The loader
+    /// registers each input message `m` together with `m + 0x20` (LSB controller) [GH:0x1424c4e60].
+    pub fn is_14bit(&self, device: &str) -> bool {
+        matches!(self.control_code(device), 4 | 5 | 7 | 8)
+    }
+
+    /// LSB companion message of a 14-bit control (`message + 0x20`).
+    pub fn lsb_message(message: u16) -> u16 {
+        message.wrapping_add(0x20)
+    }
+
     pub fn input_value(&self) -> u16 {
         hex_value(&self.input) as u16
     }

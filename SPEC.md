@@ -506,6 +506,12 @@ Bekannte Schlüssel: `RO`, `Fast`, `Blink`, `Value`, `Min`, `Max`, `Priority`, `
 - **`Dual`:** jedes Deck erhält zusätzlich die Nachricht seines Partnerdecks (1↔3, 2↔4); ohne `Dual` ist die zweite
   Nachricht gleich der ersten.
 
+### Registrierung [GH:0x1424c4e60]
+- Abgewiesen: Deck-Index > 4 und Typ-Codes 9–11.
+- **14-Bit-Steuerelemente** (`Slider` 4, `Knob` 5, `KnobSliderHiRes` 7/8): neben der Nachricht m wird zusätzlich
+  **m + 0x20** registriert (LSB-Controller zum MSB-Controller, z. B. CC 0 + CC 32). Zuordnung über eine Tabelle, die
+  mit der 16-Bit-Nachricht indiziert wird; eine bereits belegte Nachricht wird nicht überschrieben.
+
 ### Typen [GH:0x1424c27c0] (Text → interner Code)
 `Button` 0, `Slider` 4, `Knob` 5, `KnobSlider` 6, `KnobSliderHiRes` 7 (8 bei Gerät `PIONEER DDJ-SX2` oder
 `PIONEER DDJ-SX2 2IN2OUT`), `Difference` 0x0C, `Rotary` 0x0D, `RotaryAsKnob` 0x0E, `Value` 0x0F, `RawValue` 0x10,

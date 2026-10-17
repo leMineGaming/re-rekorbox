@@ -27,8 +27,8 @@ Voraussetzung: Rust (stable, getestet mit 1.99.1).
 cargo test
 ```
 
-56 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
-25 für ANLZ, 14 für rekordbox.xml, 8 für MIDI-Mappings, 5 für Pad-Dateien, 4 für DeviceSQL.
+57 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
+25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 5 für Pad-Dateien, 4 für DeviceSQL.
 
 ## CLI
 

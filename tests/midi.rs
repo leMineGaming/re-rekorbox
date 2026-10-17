@@ -110,6 +110,16 @@ fn bindings_hex_and_channel_rules() {
 }
 
 #[test]
+fn fourteen_bit_controls() {
+    use rekordbox_formats::midi::MappingEntry;
+    let m = parse(SAMPLE);
+    let e = |name: &str| m.entries.iter().find(|e| e.name == name).unwrap().clone();
+    assert!(e("Tempo").is_14bit(&m.device), "KnobSliderHiRes");
+    assert!(!e("Browse").is_14bit(&m.device), "Rotary");
+    assert_eq!(MappingEntry::lsb_message(0xB000), 0xB020, "CC 0 -> CC 32");
+}
+
+#[test]
 fn control_type_codes() {
     assert_eq!(control_type_code("Button", "X"), 0);
     assert_eq!(control_type_code("Toggle", "X"), 0x1b);
