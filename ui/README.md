@@ -36,6 +36,7 @@ sich nicht laden lässt) erscheinen 15 s rot in der oberen Leiste.
 | Sampler | 16 Pads (Klick spielt, Rechtsklick stoppt) |
 | Controller | XDJ-RX3 wird beim Anstecken erkannt und mit dem eingebauten Mapping verbunden. BROWSE wählt in der Trackliste (Auswahl scrollt mit), BROWSE drücken / LOAD 1/2 laden, BACK, TAG TRACK, TRACK FILTER (Tag-Liste), TRACK ◀▶; alle Deck-, Mixer-, Pad- und Effekt-Bedienelemente und LEDs. Fenster **Controller-Test**: MIDI-Monitor, Fortschritt je Gruppe, unbekannte Nachrichten, LED-Lauflicht, Aufnahme (`.midilog`), Bericht |
 | Einstellungen | Audiogerät und Puffer (mit Anzeige von Latenz, Last, Aussetzern; „Jetzt neu starten“), Musik-Ordner, Analyse beim Laden an/aus, Controller-Mapping verbinden (z. B. `XDJ-RX3.midi.csv`), Pro DJ Link beitreten und Decks dem Tempo eines Geräts folgen lassen, **Selbsttest** (schnell, vollständig, mit Controller-Eingaben) |
+| Link Export (Vorabversion) | Einstellungen > „Link Export aktiv“: rekordbox-rs bietet die Bibliothek im DJ-Link-Netz wie rekordbox an (Port-Abfrage 12523, Datenbank-Protokoll SPEC §5k). Das Pult kann durchsuchen und Beatgrid/Wellenformen holen; die Audio-Übertragung (NFS) fehlt noch (SPEC U33) |
 | Obere Leiste | Master-Pegel, Audio-Last in %, Aussetzer (rot), Bibliotheksstand, Analyse-Fortschritt, Controller und DJ Link, letzte Fehlermeldung |
 
 Drehregler: nach oben/unten ziehen, Doppelklick setzt zurück. Unten stehen die letzten Meldungen (Laden, Analyse,

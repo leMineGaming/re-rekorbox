@@ -863,6 +863,82 @@ PCOB PCOB PCO2 PCO2 PWV5 PWV4 [PVB2]; 2EX: PPTH PWV7 PWV6 PWVC). `PPTH` enthält
 dazu `rbx-analysis.txt` (Pfad, Samples, Rate, BPM, Konfidenz, Tonart, Camelot). Nicht erzeugt: `PQT2`, `PSSI`
 (Phrasen), `.3EX`, Cues (Cues liegen bei rekordbox ebenfalls nur in der Datenbank).
 
+## 5k. Link Export: Bibliotheks-Server für DJ-Player (Dekompilat + öffentliche Analyse)
+
+**Aufbau** [Strings, GH-Funktionen unten]: Spielt ein Player (CDJ/XDJ, z. B. XDJ-RX3) Tracks aus rekordbox
+(„LINK EXPORT“, laut Produktbeschreibung des XDJ-RX3 auch über das USB-Kabel), fragt er Menüs, Metadaten und
+Analysedaten bei einem **Datenbank-Server** ab und liest die Audiodatei über einen **NFS-Server**. In rekordbox:
+`edb_streamd.exe` ist ein allgemeiner TCP-Weiterleiter (`EDB_LISTEN_PORT`, `edb_set_listener`, `typed=yes wbuf=512
+rbuf=512`); die Anfragen beantwortet `PSvDBMain` (Quelldatei `…\Middleware\DB\Server\DBServer\PSvDBMain.cpp`) über die
+Kommunikationsschicht `PSvDBComm`/`PSvDBConnection` (Thread „PSvDBComm Thread“, `RemoteDBServer`, `rbuf=4096
+wbuf=4096` [GH:0x14237d000]). Die Dateifreigabe macht `NFSDaemon.dll` (Exporte `NFSDaemonInitialize`,
+`StartNFSDaemon`, `SetExportListEntry`, `GetExportListEntryArray`, `AddLinkMember`, `SetPermittedFileExtensionList`,
+`isMntComplete` [LOK:PE-Exporte]; Fehlermeldung „BuildUpReadDirReply“ → NFS READDIR).
+
+**Port-Ermittlung** [PUB: Deep Symmetry, „DJ Link Ecosystem Analysis – Track Metadata“]: TCP 12523, Anfrage mit
+der Zeichenkette `RemoteDBServer`, Antwort 2 Byte (Port, big-endian). Die Zeichenkette steht in rekordbox
+[GH:0x143d9eb08, benutzt in 0x14237d000 / 0x14237d5d0].
+
+### Nachrichtenformat [GH:0x14237e730 Senden, 0x14237e2c0 Empfangen, Kodierer 0x14237edc0]
+Felder sind **getypt** (ein Kennungsbyte vor jedem Wert): `0x0F` uint8, `0x10` uint16, `0x11` uint32 (je
+big-endian; [GH:0x142696150/0x142696130/0x142696140] → 0x1426971f0), `0x14` Binärblock = uint32-Länge + Daten
+[GH:0x142695f50 → 0x142697030], `0x26` Zeichenkette = uint32-Länge in UTF-16-Zeichen + UTF-16BE mit NUL
+[GH:0x142695ec0 → 0x1426969f0; Länge = Bytes/2 im Sender]. Eine Nachricht:
+
+| Feld | Kodierung |
+|---|---|
+| Magic `0x872349AE` | uint32 |
+| Transaktions-ID | uint32 |
+| Nachrichtentyp | uint16 |
+| Anzahl Argumente n | uint8 (≤ 12, Ausnahme 0x4101 mit > 12 Argumenten: 16) |
+| Argumenttypen | Binärblock 12 Byte (16 bei der Ausnahme): je Argument `06` Zahl (uint32), `02` Zeichenkette, `03` Binärblock |
+| Argumente | je nach Typ als uint32 / Zeichenkette / Binärblock; ein Binärblock der Länge 0 entfällt |
+
+**Argument-Layouts je Typ** [GH:0x142266300, Auszug]: 0x0000 (2: 06 06), 0x1000…0x1015 Menü-Anfragen (2: 06 06),
+0x1105 / 0x2001 / 0x2006 / 0x2c04 (4: 06 06 06 06), 0x2004 / 0x3207 (5: 06 06 06 06 03), 0x3000 (8 Zahlen),
+0x4000/0x4001 (2: 06 06), 0x4002 / 0x4402 / 0x4502 / 0x4802 / 0x4902 / 0x4a02 / 0x4c02 / 0x4d02 (4: 06 06 06 03),
+0x4602 / 0x4e02 / 0x4f02 (5: 06 06 06 03 06), 0x4702 (9: 06 06 06 03 06 06 06 06 03), **0x4101 (12: 06 06 06 02 06
+02 06 06 06 06 06 06)**, 0x4201 (0), 0xF001/0xF002 (Sonderfall).
+
+### Befehle [Tabelle GH:0x143d971d0, 134 Einträge; Namen aus rekordbox]
+Verbindung: 0x0000 `CMD_INFO_PLAYER_ID` (Kontext: Nummer des Players), 0x0100 `CMD_INFO_DROP` (Trennen), 0x0001
+`CMD_INFO_CANCEL`. Menüs: 0x1000 `CMD_ROOT_MENU`, 0x1001 Genre, 0x1002 Artist, 0x1003 Album, 0x1004 `CMD_TRACK_ROOT`,
+0x1006 BPM, 0x1007 Rating, 0x1008 Jahr, 0x100a Label, 0x100b Key, 0x100d Farbe, 0x100e Plays, 0x1010 Länge,
+0x1011 Bitrate, 0x1012 History, 0x1013 Dateiname, 0x1014 neuer Key, 0x1015 MyTag, 0x1102 Alben eines Artists,
+0x1202/0x1103 Tracks eines Albums, 0x1105 `CMD_TRACK_PLAYLIST`, 0x1200 `CMD_TRACK_CONTENT`, 0x1300 `CMD_SEARCH`,
+0x1400 `CMD_RIGHT_MENU`, 0x3000 `CMD_LEFT_BUF` (Menüinhalt abrufen). Track: 0x2002 `CMD_SONGDATA_TRACK`
+(Metadaten), 0x2102 `CMD_SONGDATA_TRACK2`, 0x2003 `CMD_GET_IMAGE` (Artwork), 0x2004 `CMD_GET_WAVEDATA` (Vorschau),
+0x2104 `CMD_GET_USB_CUE`, 0x2b04 `CMD_GET_USB_CUE2`, 0x2204 `CMD_GET_QUANTIZE_DATA` (Beatgrid), 0x2804
+`CMD_GET_QTZ_OFFSET`, 0x2904 Detail-Wellenform („CMD_GET_PAR_WAVE“ im Log), 0x2504 `CMD_GET_VBR_INFO`, 0x2c04
+`CMD_GET_SPECIFIED_ATOM_INFO` (ein ANLZ-Tag), 0x2602 „CMD_GET_DELIVERY_INFO“ (im Log; über die Datenschicht
+beantwortet, Inhalt nicht bestimmt – U33), 0x2402 `CMD_GET_DECODE_INFO` / 0x2302 `CMD_GET_PCMODE_SONG_INFO` /
+0x2502 (von rekordbox **nicht** beantwortet [GH:0x142386ad0]). Antworten: 0x4000 `CMD_RET_DWORD_DATA` (Erfolg +
+Anzahl), 0x4001 `…LISTBUF_START`, 0x4101 `…LISTBUF_SET` (Menüeintrag), 0x4201 `…LISTBUF_END`, 0x4002 Bild, 0x4402
+Wellenform, 0x4502 VBR, 0x4602 Beatgrid, 0x4702 Cue, 0x4802 Decode-Info, 0x4e02 Cue2, 0x4f02 ANLZ-Tag, 0x4003
+`CMD_RET_UNSUPORT_CMD`. Verteiler [GH:0x142386ee0 Analysedaten, 0x142386ad0 Metadaten].
+
+### Bedeutung der Argumente [PUB, mit den Layouts oben abgeglichen]
+- Erstes Argument der Anfragen = **DMST**: Byte 3 (höchstwertig) Nummer des anfragenden Players, Byte 2 Menüort
+  (1 Hauptmenü, 2 Untermenü, 8 Daten), Byte 1 Slot, Byte 0 Trackart (1 = rekordbox).
+- 0x3000: DMST, Offset, Anzahl (≤ 64), 0, Gesamtzahl, 0 → Antwort 0x4001, n × 0x4101, 0x4201.
+- 0x4101: Eltern-ID, ID, Länge Text 1 (Bytes), Text 1, Länge Text 2, Text 2, **Eintragsart**, Flags, Artwork-ID,
+  Position, 0, 0. Eintragsarten u. a. 0x0001 Ordner, 0x0002 Album, 0x0004 Titel, 0x0006 Genre, 0x0007 Artist,
+  0x0008 Playlist, 0x000a Rating, 0x000b Länge (s), 0x000d Tempo (BPM × 100), 0x000f Key, 0x0023 Kommentar,
+  0x002e Datum; Menüpunkte 0x0080–0x0098; Titel mit zweiter Spalte 0x0704 (Artist) usw.
+- 0x2002 → 0x4000 mit Anzahl der Metadaten-Einträge; danach 0x3000 liefert Titel, Artist, Album, Länge, Tempo,
+  Kommentar, Key, Rating, Farbe, Genre, Datum.
+- Analysedaten: 0x2204 → 0x4602 (Beatgrid, 16-Byte-Einträge little-endian: Beat im Takt, Tempo × 100, Zeit ms);
+  0x2004 → 0x4402 (Vorschau 400 × 2 Byte + 100 Byte); 0x2904 → 0x4a02 (Detail, 1 Byte je 1/150 s); 0x2104 → 0x4702,
+  0x2b04 → 0x4e02 (Cues); 0x2c04 (Tag-FourCC und Dateiendung als Zahl, z. B. `PWV5` = 0x35565750, `EXT` =
+  0x00545845) → 0x4f02 mit dem Tag (Kopf + Nutzdaten wie in der ANLZ-Datei).
+
+### Eigene Umsetzung
+`rekordbox-formats::dbserver` (Kodierung/Dekodierung) und `rbx-engine::linkexport` (Server auf der eigenen
+Bibliothek): Port-Abfrage, Kontext, Menüs Track/Artist/Album/Genre/BPM/Key, Metadaten, Beatgrid, Wellenformen, Cues,
+ANLZ-Tags aus den vorhandenen Analysedateien. Offen (U33): wie der Player den **Dateipfad** für NFS erhält und welche
+Exporte die NFS-Freigabe anbietet; dafür wird ein Mitschnitt rekordbox ↔ Player benötigt (`packaging/windows/
+Link-Mitschnitt.cmd`).
+
 ## 6. Bewusst ausgeschlossen (Begründung)
 
 - **Lizenzierung / Kopierschutz** (`lsapiw64.dll`, `clatc.dll`, Aktivierung, Abo-Prüfung): wird weder analysiert noch nachgebaut oder umgangen.
@@ -900,6 +976,7 @@ dazu `rbx-analysis.txt` (Pfad, Samples, Rate, BPM, Konfidenz, Tonart, Camelot). 
 | U30 | XDJ-RX3 im DJ-Link-Netz: tatsächliche Gerätenummer, Geräteart und gesendete Pakettypen | Mitschnitt mit `rbf djlink-listen` am Gerät |
 | U31 | DJ Link: Dauer des Alterungs-Zeitgebers je Gerät (vermutlich 10000 ms) und genaue Zahl der IdUse-Durchläufe | Mitschnitt |
 | U32 | Analyse: genaue Abbildung der ms-Datensätze auf die Tag-Werte – durch Kalibrierung angenähert (5j, Genauigkeit 8a), exakte Formeln der Spaltenbildner nicht nachgezeichnet | Dekompilat GH:0x141236eb0 ff. |
+| U33 | Link Export: wie der Player den Dateipfad erhält (CMD_GET_DELIVERY_INFO 0x2602?), Exporte und Pfade der NFS-Freigabe, Antwort auf die Medienabfrage (Port 50002) für rekordbox | Mitschnitt rekordbox ↔ Player |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |

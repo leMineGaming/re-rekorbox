@@ -126,6 +126,15 @@ Bedienelemente, unbekannte Nachrichten, Aufnahme (`.midilog`, `parse_midilog`) u
 Browse-Ereignisse, LEDs, unbekannte Nachrichten und Aufnahme/Wiedergabe. `rbx-selftest --leds --midi-listen 90`
 macht dasselbe am echten Gerät, `--midi-replay DATEI` spielt eine Aufnahme gegen Controller und Mixer.
 
+## Link Export (Vorabversion)
+
+`linkexport` bietet die Bibliothek DJ-Playern an wie rekordbox (SPEC §5k): Port-Abfrage auf TCP 12523,
+Datenbank-Verbindung mit Menüs (Wurzel, Tracks, Artists → Tracks, Keys, Suche), Track-Metadaten, Beatgrid,
+Vorschau- und Detail-Wellenform und ANLZ-Tags (z. B. `PWV5`, `PWV7`, `PSSI`) direkt aus den Analysedateien.
+`tests/linkexport.rs` prüft das über Loopback mit dem eigenen Client (`linkexport::Client`), `rbx-selftest`
+ebenso mit der echten Bibliothek. Offen (SPEC U33): Audio-Übertragung per NFS und das genaue Wurzelmenü –
+dafür `Link-Mitschnitt.cmd` (pktmon) und `rbf linkdump capture.pcapng`.
+
 ## Automatische Audio-Prüfung und Selbsttest
 
 `quality` rendert typische Bedienabläufe offline und vermisst das Ergebnis (statt zuzuhören): Knackser bei

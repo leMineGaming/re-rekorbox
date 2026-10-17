@@ -148,6 +148,7 @@ fn main() -> ExitCode {
     sections.push(soak(&o));
     sections.push(library(&o));
     sections.push(midi(&o));
+    sections.push(link_export_local());
     if o.network {
         sections.push(network(&o));
     }
@@ -767,5 +768,47 @@ fn network(o: &Opts) -> Section {
         }
         Err(e) => s.add(Status::Warn, "DJ Link beitreten", format!("{e} (läuft rekordbox? Es belegt dieselben Ports)")),
     }
+    s
+}
+
+/// Link Export server on this computer only: start it on a free port and browse it with the own client.
+fn link_export_local() -> Section {
+    use rbx_engine::linkexport::{catalog_of, Client, LinkExport};
+    use rekordbox_formats::dbserver::{dmst, kind, Arg};
+    use rekordbox_formats::library::{default_anlz_root, default_music_root, Library};
+    let mut s = Section::new("Link Export (lokal, ohne Netzwerk)");
+    let mut roots: Vec<PathBuf> = default_anlz_root().into_iter().collect();
+    roots.extend(rbx_engine::analyze::default_output_root().filter(|p| p.is_dir()));
+    let music: Vec<PathBuf> = ui_setting("music").map(PathBuf::from).or_else(default_music_root).into_iter().collect();
+    let lib = Library::build_multi(&roots, &music);
+    let server = match LinkExport::start(catalog_of(Some(&lib)), 17, 0, rbx_engine::session::Log::default()) {
+        Ok(x) => x,
+        Err(e) => {
+            s.add(Status::Fail, "Server starten", e.to_string());
+            return s;
+        }
+    };
+    let result = (|| -> std::io::Result<String> {
+        let mut c = Client::connect(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), server.query_port, 2)?;
+        let d = dmst(2, 1, 4, 1);
+        let r = c.request(kind::TRACK_ROOT, vec![Arg::Num(d), Arg::Num(0)])?;
+        let n = r.args.get(1).and_then(Arg::num).unwrap_or(0);
+        let shown = c.render(d, n.min(10))?;
+        let mut detail = String::new();
+        if let Some(first) = shown.first() {
+            let id = first.args[1].num().unwrap_or(0);
+            let d8 = dmst(2, 8, 4, 1);
+            let grid = c.request(kind::GET_QUANTIZE_DATA, vec![Arg::Num(d8), Arg::Num(id)])?;
+            let wave = c.request(kind::GET_ATOM_INFO, vec![Arg::Num(d8), Arg::Num(id), Arg::Num(0x3556_5750), Arg::Num(0x0054_5845)])?;
+            let len = |m: &rekordbox_formats::dbserver::Message| m.args.get(2).and_then(Arg::num).unwrap_or(0);
+            detail = format!("; erster Track {:?}: Beatgrid {} Bytes, Farb-Wellenform {} Bytes", first.args[3], len(&grid), len(&wave));
+        }
+        Ok(format!("{n} Tracks über das Datenbank-Protokoll abrufbar{detail}"))
+    })();
+    match result {
+        Ok(t) => s.add(Status::Ok, "Bibliothek per Link-Export-Protokoll", t),
+        Err(e) => s.add(Status::Fail, "Bibliothek per Link-Export-Protokoll", e.to_string()),
+    }
+    s.add(Status::Info, "Audio-Übertragung (NFS)", "noch nicht umgesetzt – Link-Mitschnitt.cmd mit rekordbox und dem Pult ausführen");
     s
 }

@@ -70,6 +70,14 @@ und Analyse-Genauigkeit gegenüber rekordbox, MIDI-Ports und Mapping, Netzwerk u
 und jede Minute Audio-Last und Aussetzer nach `%APPDATA%\rekordbox-rs\logs\rbx-ui.log`, Abstürze nach
 `logs\crash-*.txt`.
 
+## Link Export (Vorabversion)
+
+`rekordbox-formats::dbserver` kodiert das Datenbank-Protokoll, mit dem DJ-Player die Bibliothek eines Rechners
+abfragen (SPEC §5k, belegt aus rekordbox: Feldtypen, Nachrichtenkopf, 134 Befehle, Argument-Layouts);
+`rbx-engine::linkexport` ist der Server dazu (in `rbx-ui` unter Einstellungen). `rbf linkdump <capture>` decodiert
+Mitschnitte (pcap/pcapng) von rekordbox ↔ Player-Verkehr; `packaging/windows/Link-Mitschnitt.cmd` erstellt sie mit
+dem Windows-Werkzeug pktmon. Die Audio-Übertragung (NFS) folgt nach einem solchen Mitschnitt (SPEC U33).
+
 ## CLI
 
 ```bash

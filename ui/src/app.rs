@@ -97,6 +97,9 @@ pub struct App {
     last_detect: std::time::Instant,
     /// No automatic controller connection before this time (while an external test uses the port).
     detect_paused_until: std::time::Instant,
+    /// Link Export server (the library for DJ players) and the library generation it offers.
+    link_export: Option<rbx_engine::linkexport::LinkExport>,
+    link_export_gen: u64,
 }
 
 impl App {
@@ -149,6 +152,8 @@ impl App {
             show_ctl_test: false,
             last_detect: std::time::Instant::now(),
             detect_paused_until: std::time::Instant::now(),
+            link_export: None,
+            link_export_gen: u64::MAX,
         };
         for (d, s) in opts.load.iter().take(DECKS).enumerate() {
             app.loader.load(d, s);
@@ -161,6 +166,9 @@ impl App {
         if let Some(a) = opts.djlink {
             app.link_adapter = a.clone().unwrap_or_default();
             app.join_link();
+        }
+        if app.settings.link_export {
+            app.start_link_export();
         }
         app
     }
@@ -299,6 +307,42 @@ impl App {
                 }
             }
             self.refresh_rows();
+        }
+    }
+
+    /// Offer the library to DJ players: join DJ Link (as rekordbox) if needed and start the server.
+    pub fn start_link_export(&mut self) {
+        if self.link.is_none() {
+            self.join_link();
+        }
+        let number = self.link.as_ref().and_then(|l| l.link.lock().unwrap().state().number).unwrap_or(17);
+        let catalog = rbx_engine::linkexport::catalog_of(self.loader.library().as_ref().and_then(|g| g.as_ref()));
+        match rbx_engine::linkexport::LinkExport::start(catalog, number, rekordbox_formats::dbserver::PORT_QUERY, self.log.clone()) {
+            Ok(s) => {
+                self.log.say(format!("Link Export: {} Tracks für DJ-Player bereit", s.track_count()));
+                self.link_export = Some(s);
+                self.link_export_gen = self.loader.generation();
+                self.settings.link_export = true;
+            }
+            Err(e) => self.log.error(format!("Link Export: Port {} belegt ({e}) – läuft rekordbox?", rekordbox_formats::dbserver::PORT_QUERY)),
+        }
+    }
+
+    pub fn stop_link_export(&mut self) {
+        if self.link_export.take().is_some() {
+            self.log.say("Link Export beendet");
+        }
+        self.settings.link_export = false;
+    }
+
+    /// Keep the offered library current.
+    fn refresh_link_export(&mut self) {
+        let generation = self.loader.generation();
+        if let Some(s) = &self.link_export {
+            if generation != self.link_export_gen && !self.loader.library_loading() {
+                s.update(rbx_engine::linkexport::catalog_of(self.loader.library().as_ref().and_then(|g| g.as_ref())));
+                self.link_export_gen = generation;
+            }
         }
     }
 
@@ -603,6 +647,33 @@ impl App {
             }
             if disconnect {
                 self.disconnect_controller(Duration::from_secs(30));
+            }
+            ui.separator();
+            ui.label(RichText::new("Link Export (das Pult spielt aus dieser Bibliothek)").strong());
+            ui.label(
+                RichText::new(
+                    "Das XDJ-RX3 (per LAN oder USB) sieht rekordbox-rs als Quelle LINK: Bibliothek am Pult durchsuchen, Tracks \
+                     laden, Wellenform und Beatgrid auf dem Pult-Display. Vorabversion: Menüs, Metadaten und Analysedaten sind \
+                     umgesetzt; die Audio-Übertragung (NFS) fehlt noch – dafür bitte einmal Link-Mitschnitt.cmd mit rekordbox \
+                     ausführen. rekordbox muss geschlossen sein.",
+                )
+                .small(),
+            );
+            let mut on = self.link_export.is_some();
+            if ui.checkbox(&mut on, "Link Export aktiv").changed() {
+                if on {
+                    self.start_link_export();
+                } else {
+                    self.stop_link_export();
+                }
+            }
+            if let Some(s) = &self.link_export {
+                ui.label(format!(
+                    "{} Tracks angeboten, Datenbank-Port {}, {} Verbindung(en) von Playern",
+                    s.track_count(),
+                    s.db_port,
+                    s.connections.load(std::sync::atomic::Ordering::Relaxed)
+                ));
             }
             ui.separator();
             ui.label(RichText::new("Pro DJ Link").strong());
@@ -1228,6 +1299,7 @@ impl App {
         self.handle_drops(&ctx);
         self.shortcuts(&ctx);
         self.poll_controller();
+        self.refresh_link_export();
         self.browse_events();
         self.side_effects();
         let s = self.state();

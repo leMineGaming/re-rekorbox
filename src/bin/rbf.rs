@@ -12,6 +12,7 @@
 //! rbf midi-monitor <mapping> [device] [seconds]   decode live MIDI input with a mapping (Windows)
 //! rbf djlink-listen [seconds] [--raw]   passively decode Pro DJ Link traffic on UDP 50000-50002
 //! rbf library [anlz root] [music root] [search words]   build the library from rekordbox analysis files
+//! rbf linkdump <capture.pcapng|.pcap>   decode Link Export traffic (database messages, NFS, DJ Link)
 //! ```
 
 use rekordbox_formats::anlz::waveform::WavePreview;
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
         ["midi-monitor", m, rest @ ..] => midi_monitor(Path::new(m), rest),
         ["djlink-listen", rest @ ..] => djlink_listen(rest),
         ["library", rest @ ..] => show_library(rest),
+        ["linkdump", f] => linkdump(Path::new(f)),
         _ => Err(
             "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir> | rbf midi-route <mapping>              | rbf midi-decode <mapping> <hex>... | rbf midi-devices | rbf midi-monitor <mapping> [device] [seconds] | rbf djlink-listen [seconds] [--raw]"
                 .into(),
@@ -54,6 +56,13 @@ fn main() -> ExitCode {
 }
 
 type R = Result<(), String>;
+
+fn linkdump(path: &Path) -> R {
+    let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let packets = rekordbox_formats::capture::read(&data)?;
+    print!("{}", rekordbox_formats::capture::report(&packets));
+    Ok(())
+}
 
 fn is_3ex(p: &Path) -> bool {
     p.extension().map(|e| e.eq_ignore_ascii_case("3EX")).unwrap_or(false)

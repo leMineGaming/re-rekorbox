@@ -12,6 +12,8 @@
 //! * [`pad`] – performance pad definitions (`pad/*.pad.csv`).
 
 pub mod anlz;
+pub mod capture;
+pub mod dbserver;
 pub mod devicesql;
 pub mod djlink;
 pub mod djlink_net;

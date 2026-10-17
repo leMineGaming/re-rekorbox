@@ -8,6 +8,7 @@ pub mod analyze;
 pub mod browser;
 pub mod control;
 pub mod controller;
+pub mod linkexport;
 pub mod mixer;
 pub mod output;
 pub mod pcm;

@@ -46,7 +46,19 @@ in ein freies Deck laden, LOAD 1/2 = in Deck 1/2 laden, BACK = Tag-Liste verlass
 löschen / an den Anfang, TAG TRACK = Track markieren, TRACK FILTER = Tag-Liste zeigen,
 TRACK < > = vorheriger/nächster Track im Deck. Die LEDs folgen dem Zustand.
 Die Wellenform erscheint im Controller-Modus auf dem PC-Bildschirm (das Pult-Display
-zeigt im PC-Modus keine Wellenform; dafür ist der Link-Export-Modus in Arbeit).
+zeigt im PC-Modus keine Wellenform – dafür gibt es Link Export, siehe unten).
+
+Link Export (Vorabversion): das Pult spielt aus der rekordbox-rs-Bibliothek
+---------------------------------------------------------------------------
+Einstellungen > "Link Export aktiv" (rekordbox muss geschlossen sein). rekordbox-rs meldet
+sich im DJ-Link-Netz (LAN oder USB) wie rekordbox an; am XDJ-RX3 die Quelle LINK wählen.
+Umgesetzt: Bibliothek am Pult durchsuchen (Track, Artist, Key, Suche), Track-Infos,
+Beatgrid und Wellenformen für das Pult-Display. Noch nicht umgesetzt: die Übertragung der
+Audiodatei – dafür fehlt noch ein Detail, das nur ein Mitschnitt mit dem echten rekordbox
+zeigt:
+  "Link-Mitschnitt.cmd" ausführen (fragt nach Administratorrechten), rekordbox im
+  EXPORT-Modus mit dem Pult verbinden, am Pult LINK wählen, blättern, zwei Tracks laden und
+  kurz spielen, dann Enter. Bitte die Datei linkdump.txt aus dem geöffneten Ordner schicken.
 
 Controller-Test: "Controller-Test.cmd" (oder in rbx-ui: Einstellungen > Selbsttest >
 Controller-Test, oder oben "Controller-Test"). Erst laufen alle LEDs nacheinander an, dann
