@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         ["xml", f] => show_xml(Path::new(f)),
         ["xml-rewrite", i, o] => rewrite_xml(Path::new(i), Path::new(o)),
         ["midi", p] => check_midi(Path::new(p)),
+        ["pad", d] => check_pads(Path::new(d)),
         _ => Err(
             "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir>"
                 .into(),
@@ -249,6 +250,45 @@ fn check_midi(path: &Path) -> R {
     }
     println!("failures                                 {}", failures.len());
     for f in failures.iter().take(20) {
+        println!("  {f}");
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} failures", failures.len()))
+    }
+}
+
+/// Parse a `pad` directory: version, mode list, every pad file, and write round trips.
+fn check_pads(dir: &Path) -> R {
+    use rekordbox_formats::pad::{self, Pad};
+    let version = std::fs::read_to_string(dir.join("Version")).unwrap_or_default();
+    println!("version {}", version.trim());
+    let modes = pad::parse_modes(&std::fs::read_to_string(dir.join("Mode.pad.csv")).map_err(|e| e.to_string())?);
+    println!("modes {} ({} with a pad file)", modes.len(), modes.iter().filter(|m| m.pad_file_name().is_some()).count());
+    let mut failures = Vec::new();
+    let (mut files, mut pads, mut user) = (0, 0, 0);
+    for e in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let p = e.map_err(|e| e.to_string())?.path();
+        if !p.to_string_lossy().ends_with(".pad.csv") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+        let list = pad::parse(&text);
+        files += 1;
+        pads += list.len();
+        user += list.iter().filter(|p| Pad::clone(p).apply_user_variant()).count();
+        let normalized: String = text.lines().filter(|l| !l.is_empty()).map(|l| format!("{l}\n")).collect();
+        if pad::write(&list) != normalized {
+            failures.push(format!("{}: round trip differs", p.display()));
+        }
+    }
+    let missing: Vec<String> =
+        modes.iter().filter_map(|m| m.pad_file_name()).filter(|f| !dir.join(f).exists()).collect();
+    println!("pad files {files}, pads {pads}, pads with user variant {user}");
+    println!("modes without pad file: {missing:?}");
+    println!("failures {}", failures.len());
+    for f in &failures {
         println!("  {f}");
     }
     if failures.is_empty() {

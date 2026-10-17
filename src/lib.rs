@@ -7,7 +7,9 @@
 //!   and the MessagePack based `.3EX` embedding file.
 //! * [`xml`] – the `rekordbox.xml` library exchange format (model, writer, reader).
 //! * [`midi`] – MIDI controller mapping CSV files (`MidiMappings/*.midi.csv`).
+//! * [`pad`] – performance pad definitions (`pad/*.pad.csv`).
 
 pub mod anlz;
 pub mod midi;
+pub mod pad;
 pub mod xml;

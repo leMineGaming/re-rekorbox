@@ -15,7 +15,8 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `anlz::threex` | `.3EX` (MessagePack, `embedding`) dekodieren/kodieren | §5a |
 | `xml` | `rekordbox.xml`: Modell, Writer (Attributreihenfolge, Zahlenformate, Original-Layout), Reader (Toleranz- und Validierungsregeln), Location-URL, Escaping, Beatgrid-Export-Modi 0/1/2 und Import-Expansion, Cue-Nummern, Hot-Cue-Palette | §5e |
 | `midi` | MIDI-Mapping-CSV (`MidiMappings/*.midi.csv`): Loader-Regeln, Optionen, Typ-Codes inkl. Pad-Auflösung je Gerät, Nachrichten je Deck (Hex/Kanal, `Dual`), Writer | §5f |
-| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi` | – |
+| `pad` | Performance-Pad-Dateien (`pad/*.pad.csv`): Zeilenformat, Benutzervarianten, Modusliste | §5g |
+| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `pad` | – |
 
 ## Bauen und testen
 
@@ -25,8 +26,8 @@ Voraussetzung: Rust (stable, getestet mit 1.99.1).
 cargo test
 ```
 
-44 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
-23 für ANLZ, 14 für rekordbox.xml, 7 für MIDI-Mappings. Erwartete Bytes und Regeln stammen jeweils aus der SPEC.
+49 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
+23 für ANLZ, 14 für rekordbox.xml, 7 für MIDI-Mappings, 5 für Pad-Dateien. Erwartete Bytes und Regeln stammen jeweils aus der SPEC.
 
 ## CLI
 
@@ -41,6 +42,7 @@ cargo run --release --bin rbf -- check "%APPDATA%\Pioneer\rekordbox\share\PIONEE
 | `rbf xml <datei>` | rekordbox.xml zusammenfassen (inkl. verworfener Elemente) |
 | `rbf xml-rewrite <ein> <aus>` | rekordbox.xml einlesen und mit dieser Implementierung neu schreiben |
 | `rbf midi <datei\|ordner>` | MIDI-Mappings parsen, Zuordnungen je Deck berechnen, Round-Trip prüfen |
+| `rbf pad <ordner>` | Pad-Ordner prüfen (Version, Modi, alle Pad-Dateien, Round-Trip) |
 
 **Validierung gegen eine echte Bibliothek** (lokal, 2026-10-16; Ausgabe in `analysis/check_report.txt`):
 7307 Dateien (1831 DAT, 1827 EXT, 1826 2EX, 1823 3EX), **0 Fehler** – alle 5484 Container byte-identisch

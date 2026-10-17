@@ -495,6 +495,26 @@ Bekannte Schlüssel: `RO`, `Fast`, `Blink`, `Value`, `Min`, `Max`, `Priority`, `
 KnobSlider 232, Value 215, JogRotate 154, Parameter 140, JogTouch 78, Difference 39, JogIndicator 25, Slider 6,
 IndicatorHiRes 5, RotaryAsKnob 4, leer 4, JogIndicatorHiRes 3, RawValue 3, JogRotateAbsPos 1, JogTimestamp 1.
 
+## 5g. Performance-Pad-Dateien (`pad/*.pad.csv`, `pad/Version`)
+
+Belege: 36 mitgelieferte Dateien [OBS]; Zeilen-Parser [GH:0x141c16c30], Modusliste [GH:0x141c10020],
+Benutzervarianten [GH:0x141c0ecf0].
+- `pad/Version` enthält die Versionsnummer als Text (`1.7`).
+- Jede Datei: zeilenweise; **leere Zeilen und Zeilen mit `#` am Anfang werden übersprungen** [GH:0x141c10020, `#` @0x143b29c7c].
+- Zeile = ein Pad: an `,` zerlegt (keine Anführungszeichen); je Teil Schlüssel = Text vor dem ersten `=`, Wert = Text
+  danach (ohne `=`: ganzer Teil = Schlüssel, Wert leer); spätere gleichnamige Schlüssel überschreiben frühere.
+- [OBS] Drei Zeilenformen in 559 Zeilen: `function,value` (489), `function,value,userfunction,uservalue` (32),
+  `function,type,mode,template,pad,text,select` (37, nur `Mode.pad.csv`).
+- **Benutzervariante:** Sind `userfunction` und `uservalue` beide nicht leer, werden beim Übernehmen eines Pads
+  `function := userfunction` und `value := uservalue` gesetzt [GH:0x141c0ecf0].
+- **`Mode.pad.csv`** = Liste der Pad-Modi: `type` ∈ {`separator`, `preset`, …}, `mode`/`template`/`pad` = `on`/`off`,
+  `text` = Anzeigename, `select` = Auswahlnummer (leer möglich). Je Modus legt rekordbox 16 Pad-Plätze an [GH:0x141c10020];
+  die Pad-Datei eines Modus heißt `<function>.pad.csv`.
+- [OBS] Benutzervarianten stehen nur in `BeatJump.pad.csv` (16 × `userfunction=UserBeatJump`) und `KeyShift.pad.csv`
+  (16 × `userfunction=UserKeyShift`). Der Modus `UserBeatJump` hat **keine eigene Datei** (`UserKeyShift.pad.csv`
+  existiert) → Inferenz: die User-Modi werden aus der Basisdatei über die Benutzervariante abgeleitet.
+- Validierung mit `rbf pad` [OBS]: 37 Modi, 35 Pad-Dateien, 558 Pads, alle Write/Parse-Round-Trips identisch.
+
 ## 6. Bewusst ausgeschlossen (Begründung)
 
 - **Lizenzierung / Kopierschutz** (`lsapiw64.dll`, `clatc.dll`, Aktivierung, Abo-Prüfung): wird weder analysiert noch nachgebaut oder umgangen.

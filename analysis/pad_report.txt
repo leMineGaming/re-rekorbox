@@ -1,0 +1,5 @@
+﻿version 1.7
+modes 37 (35 with a pad file)
+pad files 35, pads 558, pads with user variant 32
+modes without pad file: ["UserBeatJump.pad.csv"]
+failures 0
