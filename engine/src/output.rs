@@ -4,7 +4,9 @@
 //! [`Output::send`] and read the latest [`MixerState`] with [`Output::state`]. Audio files must be
 //! decoded before they are sent (`Command::Load` carries the decoded [`crate::pcm::Pcm`]).
 //! Devices with four or more output channels get the headphone cue on channels 3/4.
+//! [`Output::silent`] runs the same mixer in real time without a sound device (tests, demos).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -15,7 +17,9 @@ use crate::mixer::{Command, Mixer, MixerState};
 use crate::pcm::Frame;
 
 pub struct Output {
-    _stream: cpal::Stream,
+    _stream: Option<cpal::Stream>,
+    /// Stops the silent render thread when dropped.
+    stop: Option<Arc<AtomicBool>>,
     commands: Sender<Command>,
     state: Arc<Mutex<MixerState>>,
     pub sample_rate: u32,
@@ -69,7 +73,38 @@ impl Output {
             other => return Err(format!("unsupported sample format {other:?}")),
         }?;
         stream.play().map_err(|e| e.to_string())?;
-        Ok(Output { _stream: stream, commands: tx, state, sample_rate, channels, device_name })
+        Ok(Output { _stream: Some(stream), stop: None, commands: tx, state, sample_rate, channels, device_name })
+    }
+
+    /// The mixer in real time on a background thread, output discarded.
+    pub fn silent(sample_rate: u32) -> Output {
+        let (tx, rx) = channel::<Command>();
+        let state = Arc::new(Mutex::new(MixerState::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (shared, halt) = (state.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut mixer = Mixer::new(sample_rate);
+            let block = (sample_rate / 100).max(1) as usize;
+            let (mut buf, mut cue) = (vec![[0.0f32; 2]; block], vec![[0.0f32; 2]; block]);
+            let start = std::time::Instant::now();
+            let mut rendered = 0u64;
+            while !halt.load(Ordering::Relaxed) {
+                for cmd in rx.try_iter() {
+                    mixer.apply(cmd);
+                }
+                // keep pace with the clock
+                let due = (start.elapsed().as_secs_f64() * f64::from(sample_rate)) as u64;
+                while rendered < due {
+                    mixer.render_with_cue(&mut buf, &mut cue);
+                    rendered += block as u64;
+                }
+                if let Ok(mut s) = shared.try_lock() {
+                    *s = mixer.state();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        Output { _stream: None, stop: Some(stop), commands: tx, state, sample_rate, channels: 2, device_name: "(silent)".into() }
     }
 
     pub fn send(&self, cmd: Command) {
@@ -88,6 +123,14 @@ impl Output {
 
     pub fn state(&self) -> MixerState {
         *self.state.lock().unwrap()
+    }
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        if let Some(s) = &self.stop {
+            s.store(true, Ordering::Relaxed);
+        }
     }
 }
 

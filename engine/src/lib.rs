@@ -12,3 +12,4 @@ pub mod mixer;
 pub mod output;
 pub mod pcm;
 pub mod sampler;
+pub mod session;

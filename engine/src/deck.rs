@@ -163,6 +163,16 @@ pub struct DeckState {
     pub brake_s: f64,
     /// Fractional beat number at the current position (needs a grid; beat 0 = first downbeat).
     pub beat: Option<f64>,
+    /// Hot cue positions in seconds (for display).
+    pub hot_cue_s: [Option<f64>; HOT_CUES],
+    /// Loop start/end in seconds (set or active).
+    pub loop_s: Option<(f64, f64)>,
+    /// Tempo fader −1..1 and range (e.g. 0.06 = ±6 %).
+    pub tempo_fader: f64,
+    pub tempo_range: f64,
+    pub quantize: bool,
+    pub volume: f32,
+    pub trim: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -828,6 +838,13 @@ impl Deck {
             auto_cue: self.auto_cue,
             brake_s: self.brake_s,
             beat: self.beat_at_s(self.position_s()),
+            hot_cue_s: std::array::from_fn(|i| self.hot_cues[i].map(|f| self.to_secs(f))),
+            loop_s: self.lp.map(|l| (self.to_secs(l.start), self.to_secs(l.end))),
+            tempo_fader: self.tempo_fader,
+            tempo_range: TEMPO_RANGES[self.tempo_range],
+            quantize: self.quantize,
+            volume: self.volume,
+            trim: self.trim,
         }
     }
 

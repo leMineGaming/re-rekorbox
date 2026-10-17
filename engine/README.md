@@ -16,8 +16,9 @@ Werteverarbeitung je Steuerelement, SPEC §5f/§5f-2) und die Funktionsnamen des
 | `sampler` | 16 One-Shot-Slots auf eigenem Bus; aus einem Ordner oder 16 eingebaute synthetische Klänge |
 | `mixer` | Kanalzug Trim → EQ → Color FX → Pad FX → Beat FX → Fader, Crossfader mit Kurve, Master mit Soft-Clipping, Sync mit Master-Deck, Instant Double, **Kopfhörer-Cue-Bus** (Pre-Fader, Master Cue, Cue Link) |
 | `browser` | Ordner-Browser: Browse/Öffnen/Zurück, Tag-Liste, „Related“ (gleicher Interpret), Track ◀▶ |
-| `output` | Echtzeit-Ausgabe (`cpal`/WASAPI); Geräte mit ≥ 4 Kanälen bekommen den Kopfhörer-Cue auf Kanal 3/4 |
+| `output` | Echtzeit-Ausgabe (`cpal`/WASAPI); Geräte mit ≥ 4 Kanälen bekommen den Kopfhörer-Cue auf Kanal 3/4; `Output::silent` lässt den Mixer ohne Soundkarte in Echtzeit laufen (Tests) |
 | `control` | Textbefehle und zeitgesteuerte Skripte |
+| `session` | Was ein laufender Player um die Ausgabe herum braucht (von `rbx-play` und `rbx-ui` gemeinsam genutzt): Laden in Hintergrund-Threads, Bibliothek, automatische und Stapel-Analyse, Deck-Wellenformen, Sampler-Belegung, DJ Link, Controller, Meldungsprotokoll |
 | `controller` | MIDI → Engine-Befehl über das Mapping, LED-/Anzeige-Ausgabe |
 | `analyze` | **Eigene Track-Analyse** (SPEC §5j/§8a): Wellenformen aller Varianten, Beatgrid, Tonart, FLAC-Suchtabelle; schreibt `ANLZ0000.DAT/.EXT/.2EX` im rekordbox-Format |
 
