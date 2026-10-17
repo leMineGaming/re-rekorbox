@@ -27,8 +27,8 @@ Voraussetzung: Rust (stable, getestet mit 1.99.1).
 cargo test
 ```
 
-55 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
-24 für ANLZ, 14 für rekordbox.xml, 8 für MIDI-Mappings, 5 für Pad-Dateien, 4 für DeviceSQL.
+56 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
+25 für ANLZ, 14 für rekordbox.xml, 8 für MIDI-Mappings, 5 für Pad-Dateien, 4 für DeviceSQL.
 
 ## CLI
 
@@ -60,7 +60,7 @@ Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round
   TEMPO-Import als Beatgrid-Expansion, 64-Farben-Hot-Cue-Palette.
   Offen bzw. Designentscheidung: Datumsformat von `DateAdded` (SPEC U20), Vorgabe `PRODUCT Name="rekordbox"`.
 - **Unbekannte Feldbedeutungen** werden unverändert mitgeführt, aber nicht interpretiert:
-  `PMAI`-Felder, `PCPT`-Felder außer Slot, `PQT2`-Nutzdaten, `PSSI u16[5..8]`, `PWV4`-Einträge, Farbsemantik
+  `PMAI`-Felder, `PCPT`-Felder `@1E` und `@28…@34`, `PQT2`-Nutzdaten, `PSSI u16[5..8]`, `PWV4`-Einträge, Farbsemantik
   von `PWV5 c0..c2` (SPEC §7).
 - `PCO2`, `PWVC`, `PKEY`, `PVDI` werden roh durchgereicht; die PVDI-Verschleierung wird bewusst nicht nachgebaut.
 

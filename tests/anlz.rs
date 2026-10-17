@@ -288,6 +288,26 @@ fn cue_list_with_entries() {
 }
 
 #[test]
+fn cue_point_semantics() {
+    use rekordbox_formats::anlz::tags::CueType;
+    let hot = CuePoint::new(CuePoint::slot_for_kind(5), 64_025, None);
+    assert_eq!(hot.slot, 4, "kind 5 = hot cue D");
+    assert_eq!((hot.cue_type(), hot.start_ms(), hot.end_ms()), (CueType::Point, 64_025, None));
+    let lp = CuePoint::new(0, 10_000, Some(17_469));
+    assert_eq!((lp.cue_type(), lp.end_ms()), (CueType::Loop, Some(17_469)));
+    let mut b = Vec::new();
+    lp.write(&mut b);
+    assert_eq!(b.len(), 0x38);
+    assert_eq!(b[0x1C], 2, "u8@1C = 2 for loops");
+    assert_eq!(be16(&b, 0x1E), 1000);
+    assert_eq!((be32(&b, 0x20), be32(&b, 0x24)), (10_000, 17_469));
+    assert_eq!((be32(&b, 0x14), be32(&b, 0x18)), (1, 0xFFFF_FFFF));
+    for (kind, slot) in [(1, 1), (3, 3), (4, 0), (5, 4), (6, 5), (17, 16), (18, 0), (0, 0), (-1, 0)] {
+        assert_eq!(CuePoint::slot_for_kind(kind), slot, "kind {kind}");
+    }
+}
+
+#[test]
 fn cue_list_rejects_unknown_type() {
     let mut raw = CueList::new(CueListType::Memory).to_raw();
     raw.header[3] = 2; // u16@0E = 2

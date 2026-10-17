@@ -363,7 +363,57 @@ impl Default for CuePoint {
     }
 }
 
+/// Cue entry type (`PCPT u8@1C`, §5d): 1 = cue point, 2 = loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CueType {
+    Point,
+    Loop,
+    Other(u8),
+}
+
 impl CuePoint {
+    /// Build an entry like rekordbox does (GH:0x141fc4720): defaults `u32@14` = 1, `u32@18` = 0xFFFFFFFF,
+    /// `u16@1E` = 1000; `slot` 0 = memory cue, 1… = hot cue A…; `end_ms` makes it a loop.
+    pub fn new(slot: u16, start_ms: u32, end_ms: Option<u32>) -> CuePoint {
+        CuePoint {
+            slot,
+            unknown_14: [0, 1, 0xFFFF, 0xFFFF],
+            unknown_1c: if end_ms.is_some() { 2 } else { 1 },
+            unknown_1e: 1000,
+            unknown_20: [start_ms, end_ms.unwrap_or(0xFFFF_FFFF), 0, 0, 0, 0],
+            ..CuePoint::default()
+        }
+    }
+
+    /// Hot cue slot for an internal cue kind as used by the builder (1–3 → 1–3, 5 → 4, 6…17 → kind−1,
+    /// otherwise 0 = memory cue).
+    pub fn slot_for_kind(kind: i32) -> u16 {
+        match kind {
+            1..=3 => kind as u16,
+            5 => 4,
+            6..=17 => (kind - 1) as u16,
+            _ => 0,
+        }
+    }
+
+    pub fn cue_type(&self) -> CueType {
+        match self.unknown_1c {
+            1 => CueType::Point,
+            2 => CueType::Loop,
+            v => CueType::Other(v),
+        }
+    }
+
+    /// Start position in milliseconds (`u32@20`).
+    pub fn start_ms(&self) -> u32 {
+        self.unknown_20[0]
+    }
+
+    /// Loop end in milliseconds (`u32@24`), `None` when 0xFFFFFFFF.
+    pub fn end_ms(&self) -> Option<u32> {
+        Some(self.unknown_20[1]).filter(|&v| v != 0xFFFF_FFFF)
+    }
+
     /// Parse one entry at the start of `b`; returns the entry and its total length.
     pub fn parse(b: &[u8]) -> Result<(CuePoint, usize)> {
         need("PCPT header", b, 0x1C)?;

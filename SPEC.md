@@ -195,13 +195,17 @@ sonst wird der Puffer genullt und die Nutzdaten übersprungen (tolerantes Lesen)
 |---|---|---|
 | 0x00 | `PCPT` | Kennung geprüft |
 | 0x04 / 0x08 | u32 / u32 | header_len (0x1C) / total_len (0x38) |
-| 0x0C | u16 | gelesen, Bedeutung unbekannt |
-| 0x0E | u16 | **Slot**: Werte 1…3 kommen in feste Slots, alle anderen in eine zweite Liste |
-| 0x10 | u32 | unbekannt |
-| 0x14…0x1A | 4 × u16 | unbekannt |
-| 0x1C, 0x1D | 2 × u8 | unbekannt |
-| 0x1E | u16 | unbekannt |
-| 0x20…0x34 | 6 × u32 | unbekannt (Inferenz: Positionen in ms, z. B. Cue-/Loop-Ende) |
+| 0x0C | u16 | 0 (Builder) |
+| 0x0E | u16 | **Hot-Cue-Slot**: 0 = Memory Cue, 1… = A…; aus interner Art: 1–3 → 1–3, 5 → 4, 6…17 → Art − 1 [GH:0x141fc4720]; der Reader legt 1…3 in feste Slots |
+| 0x10 | u32 | 0; = 4 bei interner Art 4 [GH:0x141fc4720] |
+| 0x14 | u32 | 1 (Builder-Vorgabe) |
+| 0x18 | u32 | 0xFFFFFFFF (Builder-Vorgabe) |
+| 0x1C | u8 | **Typ: 1 = Cue, 2 = Loop** (2, wenn ein Ende gesetzt ist) |
+| 0x1D | u8 | 0 |
+| 0x1E | u16 | 1000 (Builder-Vorgabe, Bedeutung unbekannt) |
+| 0x20 | u32 | **Start in ms** (interne Cue `+0x10`, dieselbe Quelle wie XML `Start`) |
+| 0x24 | u32 | **Loop-Ende in ms**, bei Cues 0xFFFFFFFF (interne Cue `+0x18`, wie XML `End`) |
+| 0x28…0x34 | 4 × u32 | interne Cue `+0x20`, `+0x28`, `+0x24`, `+0x2C` (Inferenz: Frame-/MPEG-Positionen von Start/Ende) |
 
 - Typ-1-Liste: Speicher für max(Anzahl, 3) Einträge; nur drei feste Slots → Inferenz: PCOB bildet höchstens 3 Hot Cues (A–C) ab, mehr erst über `PCO2` (U15).
 - Der DAT-Default-Konstruktor legt 10 vorbelegte PCPT-Einträge im Speicher an; in den Dateien sind die PCOB-Listen trotzdem leer (Abschn. 5a).
@@ -241,6 +245,15 @@ sonst wird der Puffer genullt und die Nutzdaten übersprungen (tolerantes Lesen)
 umgewandelt (GH:0x1412bbb50, Schlüssel aus einem eingebetteten String abgeleitet) und das Flag gelöscht. Als
 Schutzmaßnahme analog zum DB-Schlüssel wird das Verfahren **bewusst weder spezifiziert noch nachgebaut**; die
 Implementierung reicht PVDI unverändert durch.
+
+### PCP2-Builder [GH:0x141fc47e0] (Struktur-Offsets = Datei-Offsets, Inferenz analog zu den anderen Tags)
+Kopf: `PCP2`, header_len 0x10, total_len 0x58 + Kommentar. `u16@0E` = Slot (wie PCPT), `u8@10` = Typ (wie PCPT `@1C`),
+`u16@12` = PCPT `@1E` (1000), `u32@14` = Start ms, `u32@18` = Ende ms, `u8@1C` = Farbindex + 1 (nur < 8), `u8@1D` = 1,
+`u16@1E`/`u16@20` = zwei Werte < 1000, `u16@24`/`u16@26` = Wertepaar (nur beide ≠ 0; Inferenz: Loop-Länge als Bruch),
+**`u16@2A` = Kommentarlänge**, Kommentar als UTF-16 angehängt (total_len wächst um die Länge),
+**`u8@2C` = Hot-Cue-Farbe als Palettenindex 1…64, `u8@2D/2E/2F` = R/G/B** (aus der Palette bzw. Standardfarbe des Slots),
+`@30…@57` = optionale Zusatzdaten (nur wenn die Quelle sie hat). Der Reader (unten) liest das Kommentar-Längenfeld bei
+Objekt-Offset 0x32 = Datei-Offset 0x2A (Objekt beginnt mit 8-Byte-vtable-Zeiger) → konsistent.
 
 ### PCP2-Einträge (Inhalt von PCO2) [GH:0x14127c300, Header-Reader GH:0x14127c750]
 Pro Eintrag: Header (GH:0x14127c750, nicht weiter zerlegt), dann ein **`u16`-Längenfeld + UTF-16BE-Kommentar**
@@ -591,7 +604,7 @@ groß und ohne Beispieldatei nicht gegenprüfbar. Benötigt wird ein USB-/Ordner
 | U12 | PSSI: Layout, mood, Label-Umrechnung, Fill-in geklärt (5d); offen: Bedeutung von `u16[5..8]` und `u8@1C/@1D` (nur durchgereicht) | Nutzer der djplay-Felder +0x18…+0x24 |
 | U13 | Schlüssel d2…d12 im `.3EX`-Embedding | Dekompilat |
 | U14 | Wellenformen: Bit-Layout PWAV/PWV3/PWV5 geklärt (5d); offen: Farbsemantik c0–c2/w, Layout PWV4, PWV6/7-Bandzuordnung | Renderer-Code |
-| U15 | PCPT-Feldsemantik (0x0C, 0x10…0x34) und PCO2-Format | Dekompilat der Nutzer dieser Strukturen |
+| U15 | PCPT: Slot, Typ, Start/Ende geklärt (5b); PCP2-Builder geklärt (5c); offen: `u16@1E` = 1000, `@28…@34`, PCP2 `@30…@57` | Dekompilat der Cue-Struktur |
 | U16 | PKEY: vom EXT-Code nur roh gespeichert [GH:0x14127b650], in keiner der 1827 `.EXT`-Dateien vorhanden | Nutzer der Rohdaten finden |
 | U17 | PWVC-Werte (80…105) – Bedeutung | Nutzer im Wellenform-Renderer |
 | U18 | PVDI: Header geklärt (5c); Inhalt verschleiert → bewusst nicht weiter untersucht | – |
