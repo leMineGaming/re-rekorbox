@@ -57,6 +57,26 @@ pub enum Command {
     ColorFxSelect(Option<ColorFx>),
     /// Shared Color FX sub-parameter 0..1.
     ColorSub(f32),
+    Reverse(usize, bool),
+    Slip(usize, bool),
+    MasterTempo(usize, bool),
+    /// Key shift in semitones.
+    Key(usize, i32),
+    /// Vinyl brake/start time in seconds.
+    Brake(usize, f64),
+    MemoryStore(usize),
+    /// Call next (`true`) or previous memory cue.
+    MemoryCall(usize, bool),
+    MemoryDelete(usize),
+    AutoCue(usize, bool),
+    /// Search button held at a speed (e.g. ±4), 0 = released.
+    Search(usize, f64),
+    KeyboardPress(usize, i32),
+    KeyboardRelease(usize),
+    /// Copy the other deck (track, position, cues, transport) into this one.
+    InstantDouble(usize),
+    /// Sync master deck (`None` = automatic: the other deck).
+    SetMaster(Option<usize>),
     BeatFxOn(bool),
     BeatFxSelect(BeatFxKind),
     /// Beat FX knob 0..1.
@@ -89,7 +109,10 @@ impl Command {
             JogTouch(d, _) | Quantize(d, _) => Some(*d),
             Jog(d, _) => Some(*d),
             Volume(d, _) | Trim(d, _) | ColorKnob(d, _) | Eq(d, _, _) => Some(*d),
-            PadFx(d, _) => Some(*d),
+            PadFx(d, _) | Reverse(d, _) | Slip(d, _) | MasterTempo(d, _) | Key(d, _) | Brake(d, _) => Some(*d),
+            MemoryStore(d) | MemoryCall(d, _) | MemoryDelete(d) | AutoCue(d, _) | Search(d, _) => Some(*d),
+            KeyboardPress(d, _) | KeyboardRelease(d) | InstantDouble(d) => Some(*d),
+            SetMaster(_) => None,
             ColorFxSelect(_) | ColorSub(_) | Crossfader(_) | MasterGain(_) => None,
             BeatFxOn(_) | BeatFxSelect(_) | BeatFxDepth(_) | BeatFxBeat(_) | BeatFxAdjust(_) | BeatFxAssign(_)
             | BeatFxBpm(_) => None,
@@ -111,6 +134,8 @@ pub struct MixerState {
     pub beat_fx: BeatFxState,
     /// Pad FX held per deck (bank, slot).
     pub pad_fx: [Option<(usize, usize)>; DECKS],
+    /// Sync master deck chosen with MASTER (`None` = automatic).
+    pub master: Option<usize>,
 }
 
 /// Beat FX section for display / LEDs.
@@ -146,6 +171,7 @@ pub struct Mixer {
     fx_assign: FxAssign,
     fx_bpm: Option<f64>,
     pad_fx: [Option<(usize, usize)>; DECKS],
+    sync_master: Option<usize>,
     scratch: Vec<Frame>,
 }
 
@@ -194,6 +220,7 @@ impl Mixer {
             fx_assign: FxAssign::Master,
             fx_bpm: None,
             pad_fx: [None; DECKS],
+            sync_master: None,
             scratch: Vec::new(),
         }
     }
@@ -215,6 +242,7 @@ impl Mixer {
                 auto_bpm: self.fx_bpm.is_none(),
             },
             pad_fx: self.pad_fx,
+            master: self.sync_master,
         }
     }
 
@@ -267,6 +295,23 @@ impl Mixer {
                 self.color_fx = fx;
             }
             ColorSub(v) => self.color_sub = v.clamp(0.0, 1.0),
+            Reverse(d, on) => self.decks[d].set_reverse(on),
+            Slip(d, on) => self.decks[d].set_slip(on),
+            MasterTempo(d, on) => self.decks[d].set_master_tempo(on),
+            Key(d, k) => self.decks[d].set_key(k),
+            Brake(d, s) => self.decks[d].set_brake(s),
+            MemoryStore(d) => self.decks[d].memory_store(),
+            MemoryCall(d, fwd) => self.decks[d].memory_call(fwd),
+            MemoryDelete(d) => self.decks[d].memory_delete(),
+            AutoCue(d, on) => self.decks[d].set_auto_cue(on),
+            Search(d, v) => self.decks[d].set_search(v),
+            KeyboardPress(d, k) => self.decks[d].keyboard_press(k),
+            KeyboardRelease(d) => self.decks[d].keyboard_release(),
+            InstantDouble(d) => {
+                let other = self.decks[1 - d].clone();
+                self.decks[d].copy_from(&other);
+            }
+            SetMaster(m) => self.sync_master = m.filter(|&m| m < DECKS),
             BeatFxOn(on) => self.beat_fx.on = on,
             BeatFxSelect(k) => {
                 if k != self.beat_fx.kind {
@@ -336,7 +381,10 @@ impl Mixer {
     /// Match the tempo of `deck` to the other deck and, if both are playing, align the beat phase
     /// (shift by less than half a beat). Needs grids on both decks; otherwise nothing happens.
     pub fn sync(&mut self, deck: usize) {
-        let other = 1 - deck;
+        let other = match self.sync_master {
+            Some(m) if m != deck => m,
+            _ => 1 - deck,
+        };
         let (Some(g_self), Some(g_master), Some(master_bpm)) =
             (self.decks[deck].grid, self.decks[other].grid, self.decks[other].bpm())
         else {

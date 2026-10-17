@@ -33,6 +33,12 @@ pub struct ControllerConfig {
     pub gain_range_db: f32,
     /// Seconds moved per tick of the search wheel / jog search.
     pub search_seconds_per_tick: f64,
+    /// Key shift per KEY SHIFT pad (pads 1..8, then the shift layer 1..8), semitones.
+    pub key_shift_pads: [i32; 16],
+    /// Speed of the SEARCH buttons.
+    pub search_speed: f64,
+    /// Longest vinyl brake time (VINYL ADJUST BRAKE knob fully up), seconds.
+    pub max_brake_s: f64,
 }
 
 impl Default for ControllerConfig {
@@ -43,6 +49,9 @@ impl Default for ControllerConfig {
             tempo_invert: false,
             gain_range_db: 12.0,
             search_seconds_per_tick: 0.05,
+            key_shift_pads: [1, 2, 3, 4, -1, -2, -3, -4, 5, 6, 7, 12, -5, -6, -7, -12],
+            search_speed: 4.0,
+            max_brake_s: 3.0,
         }
     }
 }
@@ -88,6 +97,57 @@ pub enum Target {
     BeatFxAssign(FxAssign),
     /// Pad FX bank (0/1) and slot (0..15).
     PadFx(usize, usize),
+    Reverse,
+    Slip,
+    MasterTempo,
+    Brake,
+    MemoryStore,
+    MemoryCall(bool),
+    MemoryDelete,
+    TimeMode,
+    AutoCue,
+    FourBeatLoop,
+    Master,
+    InstantDouble,
+    SearchButton(f64),
+    /// KEY SHIFT pad index into `key_shift_pads`.
+    KeyShiftPad(usize),
+    /// KEYBOARD pad: semitones.
+    KeyboardPad(i32),
+    PadMode(PadMode),
+    /// Output-only indicators.
+    SlipFlash,
+    Loaded,
+    ChannelLevel,
+    /// Known function that deliberately triggers nothing (see `ignore_reason`).
+    NoOp,
+}
+
+/// Pad modes of the XDJ-RX3 (mode buttons, with SHIFT the second mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PadMode {
+    #[default]
+    HotCue,
+    Keyboard,
+    BeatLoop,
+    KeyShift,
+    PadFx1,
+    PadFx2,
+    BeatJump,
+    Sampler,
+}
+
+/// Why a function is mapped to [`Target::NoOp`].
+pub fn ignore_reason(function: &str) -> Option<&'static str> {
+    Some(match function {
+        "JogPitchBend" => "same message as JogScratch; the deck decides by jog touch",
+        "JogTouch+Shift" => "with SHIFT the jog sends JogSearch, the touch itself needs no action",
+        "JogRatency" | "MidiOutInterval" => "device parameter rows, not controls",
+        "DeckState" => "deck 1-4 select state; the engine has two decks",
+        "InputSelect" => "USB/LINE input select is handled inside the unit",
+        "AuxInputSelect.Off" | "AuxInputSelect.0dB" | "AuxInputSelect.12dB" => "aux input routing is handled inside the unit",
+        _ => return None,
+    })
 }
 
 impl Target {
@@ -149,6 +209,33 @@ pub fn target_of(function: &str) -> Option<Target> {
         "CFX4On" => ColorSelect(ColorFx::Sweep),
         "CFX5On" => ColorSelect(ColorFx::Noise),
         "CFX6On" => ColorSelect(ColorFx::Crush),
+        "Reverse" => Reverse,
+        "Slip" => Slip,
+        "MasterTempo" => MasterTempo,
+        "VinylAdjustBrake" => Brake,
+        "Memory" => MemoryStore,
+        "CallNext" => MemoryCall(true),
+        "CallPrev" => MemoryCall(false),
+        "Delete" => MemoryDelete,
+        "TimeMode" => TimeMode,
+        "TimeMode+LongPress" => AutoCue,
+        "LoopIn+LongPress" => FourBeatLoop,
+        "Master" => Master,
+        "Sync+LongPress" => InstantDouble,
+        "SearchFwd" => SearchButton(1.0),
+        "SearchRev" => SearchButton(-1.0),
+        "HotCue" => PadMode(self::PadMode::HotCue),
+        "HotCue+Shift" => PadMode(self::PadMode::Keyboard),
+        "BeatLoop" => PadMode(self::PadMode::BeatLoop),
+        "BeatLoop+Shift" => PadMode(self::PadMode::KeyShift),
+        "SlipLoop" => PadMode(self::PadMode::PadFx1),
+        "SlipLoop+Shift" => PadMode(self::PadMode::PadFx2),
+        "BeatJump" => PadMode(self::PadMode::BeatJump),
+        "BeatJump+Shift" => PadMode(self::PadMode::Sampler),
+        "SlipStateForFlashing" => SlipFlash,
+        "LoadedIndicator" => Loaded,
+        "ChannelLevel" => ChannelLevel,
+        f if ignore_reason(f).is_some() => NoOp,
         "FX1-1On" => BeatFxOn,
         "FX1-1On+Shift" => BeatFxNext,
         "FX1-1" => BeatFxDepth,
@@ -180,6 +267,14 @@ pub fn target_of(function: &str) -> Option<Target> {
                 BeatLoopPad(n - 5)
             } else if (f.ends_with(".BeatJump") || f.ends_with("_BeatJump+Shift")) && (1..=8).contains(&n) {
                 BeatJumpPad(n - 1)
+            } else if f.ends_with("_KeyShift") && (1..=8).contains(&n) {
+                KeyShiftPad(n - 1)
+            } else if f.ends_with("_KeyShift+Shift") && (1..=8).contains(&n) {
+                KeyShiftPad(n + 7)
+            } else if f.ends_with("_Keyboard") && (1..=8).contains(&n) {
+                KeyboardPad(n as i32 - 1)
+            } else if f.ends_with("_Keyboard+Shift") && (1..=8).contains(&n) {
+                KeyboardPad(n as i32 - 9)
             } else if (f.ends_with(".PadFx1") || f.ends_with("_PadFx1")) && (1..=16).contains(&n) {
                 PadFx(0, n - 1)
             } else if (f.ends_with(".PadFx2") || f.ends_with("_PadFx2")) && (1..=16).contains(&n) {
@@ -206,11 +301,30 @@ struct DeckCtl {
     quantize: bool,
     range: usize,
     touched: bool,
+    reverse: bool,
+    slip: bool,
+    master_tempo: bool,
+    auto_cue: bool,
+    time_remaining: bool,
+    key: i32,
+    pad_mode: PadMode,
 }
 
 impl Default for DeckCtl {
     fn default() -> Self {
-        DeckCtl { vinyl: true, quantize: false, range: 2, touched: false }
+        DeckCtl {
+            vinyl: true,
+            quantize: false,
+            range: 2,
+            touched: false,
+            reverse: false,
+            slip: false,
+            master_tempo: false,
+            auto_cue: false,
+            time_remaining: false,
+            key: 0,
+            pad_mode: PadMode::HotCue,
+        }
     }
 }
 
@@ -234,6 +348,7 @@ pub struct Controller {
     color_fx: Option<ColorFx>,
     fx_on: bool,
     fx_kind: BeatFxKind,
+    sync_master: Option<usize>,
     tap: TapTempo,
     /// Time of the message being handled (seconds).
     now: f64,
@@ -248,6 +363,7 @@ impl Controller {
             color_fx: None,
             fx_on: false,
             fx_kind: BeatFxKind::Delay,
+            sync_master: None,
             tap: TapTempo::default(),
             now: 0.0,
             config: ControllerConfig::default(),
@@ -256,6 +372,16 @@ impl Controller {
 
     pub fn mapping(&self) -> &MidiMapping {
         self.proc.mapping()
+    }
+
+    /// Active pad mode of a deck (0-based).
+    pub fn pad_mode(&self, deck: usize) -> PadMode {
+        self.decks[deck].pad_mode
+    }
+
+    /// TIME MODE: true = remaining time is shown.
+    pub fn time_remaining(&self, deck: usize) -> bool {
+        self.decks[deck].time_remaining
     }
 
     /// Function names with input messages, split into (handled, not handled).
@@ -357,6 +483,52 @@ impl Controller {
             (Target::Eq(band), _, Some(v)) => vec![C::Eq(d, band, v as f32)],
             (Target::ColorKnob(_), _, Some(v)) => vec![C::ColorKnob(d, v as f32)],
             (Target::ColorSub, _, Some(v)) => vec![C::ColorSub(v as f32)],
+            (Target::Reverse, Some(true), _) => {
+                ctl.reverse = !ctl.reverse;
+                vec![C::Reverse(d, ctl.reverse)]
+            }
+            (Target::Slip, Some(true), _) => {
+                ctl.slip = !ctl.slip;
+                vec![C::Slip(d, ctl.slip)]
+            }
+            (Target::MasterTempo, Some(true), _) => {
+                ctl.master_tempo = !ctl.master_tempo;
+                vec![C::MasterTempo(d, ctl.master_tempo)]
+            }
+            (Target::Brake, _, Some(v)) => vec![C::Brake(d, v * cfg.max_brake_s)],
+            (Target::MemoryStore, Some(true), _) => vec![C::MemoryStore(d)],
+            (Target::MemoryCall(fwd), Some(true), _) => vec![C::MemoryCall(d, fwd)],
+            (Target::MemoryDelete, Some(true), _) => vec![C::MemoryDelete(d)],
+            (Target::TimeMode, Some(true), _) => {
+                ctl.time_remaining = !ctl.time_remaining;
+                vec![]
+            }
+            (Target::AutoCue, Some(true), _) => {
+                ctl.auto_cue = !ctl.auto_cue;
+                vec![C::AutoCue(d, ctl.auto_cue)]
+            }
+            (Target::FourBeatLoop, Some(true), _) => vec![C::BeatLoop(d, 4.0)],
+            (Target::Master, Some(true), _) => {
+                self.sync_master = if self.sync_master == Some(d) { None } else { Some(d) };
+                vec![C::SetMaster(self.sync_master)]
+            }
+            (Target::InstantDouble, Some(true), _) => vec![C::InstantDouble(d)],
+            (Target::SearchButton(dir), Some(true), _) => vec![C::Search(d, dir * cfg.search_speed)],
+            (Target::SearchButton(_), Some(false), _) => vec![C::Search(d, 0.0)],
+            (Target::KeyShiftPad(i), Some(true), _) => {
+                let k = cfg.key_shift_pads[i];
+                ctl.key = if ctl.key == k { 0 } else { k };
+                vec![C::Key(d, ctl.key)]
+            }
+            (Target::KeyboardPad(k), Some(true), _) => {
+                ctl.key = k;
+                vec![C::KeyboardPress(d, k)]
+            }
+            (Target::KeyboardPad(_), Some(false), _) => vec![C::KeyboardRelease(d)],
+            (Target::PadMode(m), Some(true), _) => {
+                ctl.pad_mode = m;
+                vec![]
+            }
             (Target::BeatFxOn, Some(true), _) => {
                 self.fx_on = !self.fx_on;
                 vec![C::BeatFxOn(self.fx_on)]
@@ -445,6 +617,21 @@ impl Controller {
                     Target::Quantize => self.decks[d].quantize,
                     Target::Vinyl => self.decks[d].vinyl,
                     Target::PadFx(bank, slot) => s.pad_fx[d] == Some((bank, slot)),
+                    Target::Reverse => st.reverse,
+                    Target::Slip => st.slip,
+                    Target::SlipFlash => st.slip_diverged,
+                    Target::MasterTempo => st.master_tempo,
+                    Target::Master => s.master == Some(d),
+                    Target::FourBeatLoop => st.looping,
+                    Target::Loaded => st.loaded,
+                    Target::KeyShiftPad(i) => st.key != 0 && st.key == self.config.key_shift_pads[i],
+                    Target::KeyboardPad(k) => st.key == k,
+                    Target::PadMode(m) => self.decks[d].pad_mode == m,
+                    Target::ChannelLevel => {
+                        let v = (s.channel_peak[d].min(1.0) * 127.0).round() as u8;
+                        out.push(Led { status: (b.message >> 8) as u8, data1: b.message as u8, value: v });
+                        continue;
+                    }
                     _ => continue,
                 };
                 out.push(Led { status: (b.message >> 8) as u8, data1: b.message as u8, value: if on { 0x7F } else { 0 } });

@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use crate::dsp::PitchShifter;
 use crate::pcm::{Frame, Pcm};
 
 /// Number of hot cue slots.
@@ -72,6 +73,17 @@ pub struct DeckState {
     pub at_cue: bool,
     /// Which hot cue slots are set.
     pub hot_cues: [bool; HOT_CUES],
+    pub reverse: bool,
+    pub slip: bool,
+    /// Slip is on and playback currently diverges from the background position.
+    pub slip_diverged: bool,
+    pub master_tempo: bool,
+    /// Key shift in semitones.
+    pub key: i32,
+    pub memory_cues: usize,
+    pub auto_cue: bool,
+    /// Vinyl brake/start time in seconds (0 = instant).
+    pub brake_s: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +117,25 @@ pub struct Deck {
     pub trim: f32,
     /// Quantize hot cues / loops to the beat grid.
     pub quantize: bool,
+    reverse: bool,
+    slip: bool,
+    /// Background position while slip is on.
+    shadow: f64,
+    was_diverged: bool,
+    /// Hot cue held in slip mode while playing (returns to the background position on release).
+    hot_slip: Option<usize>,
+    master_tempo: bool,
+    key: i32,
+    shifter: PitchShifter,
+    /// Vinyl brake/start time (s) and motor speed factor 0..1.
+    brake_s: f64,
+    motor: f64,
+    stopping: bool,
+    /// Speed while a search button is held (0 = not searching).
+    search: f64,
+    memory: Vec<f64>,
+    auto_cue: bool,
+    keyboard_preview: bool,
 }
 
 impl Default for Deck {
@@ -130,6 +161,21 @@ impl Default for Deck {
             volume: 1.0,
             trim: 1.0,
             quantize: false,
+            reverse: false,
+            slip: false,
+            shadow: 0.0,
+            was_diverged: false,
+            hot_slip: None,
+            master_tempo: false,
+            key: 0,
+            shifter: PitchShifter::new(48000),
+            brake_s: 0.0,
+            motor: 0.0,
+            stopping: false,
+            search: 0.0,
+            memory: Vec::new(),
+            auto_cue: false,
+            keyboard_preview: false,
         }
     }
 }
@@ -167,6 +213,41 @@ impl Deck {
         self.lp = None;
         self.cue_preview = false;
         self.hot_preview = None;
+        self.hot_slip = None;
+        self.memory.clear();
+        self.stopping = false;
+        self.motor = 0.0;
+        self.reverse = false;
+        self.shifter = PitchShifter::new(self.pcm.as_ref().map_or(48000, |p| p.sample_rate));
+        if self.auto_cue {
+            self.cue = self.first_sound();
+            self.pos = self.cue;
+        }
+        self.shadow = self.pos;
+        self.scratch_target = self.pos;
+    }
+
+    /// First frame louder than −60 dBFS (auto cue), or 0.
+    fn first_sound(&self) -> f64 {
+        let Some(p) = &self.pcm else { return 0.0 };
+        p.frames.iter().position(|f| f[0].abs().max(f[1].abs()) > 0.001).unwrap_or(0) as f64
+    }
+
+    /// Copy track, position, cues and transport from another deck (instant double).
+    pub fn copy_from(&mut self, other: &Deck) {
+        let Some(pcm) = other.pcm.clone() else { return };
+        self.load(pcm, other.grid);
+        self.pos = other.pos;
+        self.shadow = other.pos;
+        self.scratch_target = other.pos;
+        self.cue = other.cue;
+        self.hot_cues = other.hot_cues;
+        self.memory = other.memory.clone();
+        self.lp = other.lp;
+        if other.playing && !other.stopping {
+            self.playing = true;
+            self.motor = 1.0;
+        }
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -195,21 +276,143 @@ impl Deck {
 
     pub fn play(&mut self) {
         if self.is_loaded() {
+            if !self.playing || self.brake_s <= 0.0 {
+                self.motor = if self.brake_s > 0.0 { self.motor.min(1.0) } else { 1.0 };
+            }
             self.playing = true;
+            self.stopping = false;
             self.cue_preview = false;
             self.hot_preview = None;
+            self.keyboard_preview = false;
         }
     }
 
+    /// Pause; with a brake time the deck slows down first (vinyl brake).
     pub fn pause(&mut self) {
+        if self.playing && self.brake_s > 0.0 {
+            self.stopping = true;
+        } else {
+            self.stop_now();
+        }
+    }
+
+    fn stop_now(&mut self) {
         self.playing = false;
+        self.stopping = false;
+        self.motor = 0.0;
     }
 
     pub fn toggle_play(&mut self) {
-        if self.playing {
+        if self.playing && !self.stopping {
             self.pause()
         } else {
             self.play()
+        }
+    }
+
+    /// Vinyl brake / start time in seconds (0 = instant).
+    pub fn set_brake(&mut self, seconds: f64) {
+        self.brake_s = seconds.clamp(0.0, 5.0);
+    }
+
+    pub fn set_reverse(&mut self, on: bool) {
+        self.reverse = on;
+    }
+
+    pub fn set_slip(&mut self, on: bool) {
+        self.slip = on;
+        self.shadow = self.pos;
+    }
+
+    /// Master tempo (key lock): tempo changes keep the pitch.
+    pub fn set_master_tempo(&mut self, on: bool) {
+        self.master_tempo = on;
+    }
+
+    /// Key shift in semitones (−12..12).
+    pub fn set_key(&mut self, semitones: i32) {
+        self.key = semitones.clamp(-12, 12);
+    }
+
+    pub fn key(&self) -> i32 {
+        self.key
+    }
+
+    pub fn set_auto_cue(&mut self, on: bool) {
+        self.auto_cue = on;
+    }
+
+    /// Search button held: fast forward/backward at `speed` (0 = released).
+    pub fn set_search(&mut self, speed: f64) {
+        self.search = speed;
+        self.scratch_target = self.pos;
+    }
+
+    // --- memory cues -----------------------------------------------------------------------
+
+    /// Store a memory cue: the cue point while paused on it, otherwise the current position.
+    pub fn memory_store(&mut self) {
+        if !self.is_loaded() {
+            return;
+        }
+        let at = if !self.playing && (self.pos - self.cue).abs() < 1.0 { self.cue } else { self.quantized(self.pos) };
+        if !self.memory.iter().any(|&m| (m - at).abs() < 1.0) {
+            self.memory.push(at);
+            self.memory.sort_by(f64::total_cmp);
+        }
+    }
+
+    /// Call the next (`forward`) or previous memory cue: it becomes the cue point and the deck
+    /// jumps there.
+    pub fn memory_call(&mut self, forward: bool) {
+        let next = if forward {
+            self.memory.iter().copied().find(|&m| m > self.pos + 1.0)
+        } else {
+            self.memory.iter().rev().copied().find(|&m| m < self.pos - 1.0)
+        };
+        if let Some(m) = next {
+            self.cue = m;
+            self.pos = m;
+            self.shadow = m;
+            self.scratch_target = m;
+        }
+    }
+
+    /// Delete the memory cue at the current position (the one just called).
+    pub fn memory_delete(&mut self) {
+        let pos = self.pos;
+        self.memory.retain(|&m| (m - pos).abs() >= 1.0);
+    }
+
+    pub fn memory_cues_s(&self) -> Vec<f64> {
+        self.memory.iter().map(|&m| self.to_secs(m)).collect()
+    }
+
+    // --- keyboard mode ---------------------------------------------------------------------
+
+    /// Keyboard pad: set the key to `semitones` and play from the first hot cue (else the cue
+    /// point); when paused it plays while the pad is held.
+    pub fn keyboard_press(&mut self, semitones: i32) {
+        if !self.is_loaded() {
+            return;
+        }
+        self.set_key(semitones);
+        let start = self.hot_cues.iter().flatten().next().copied().unwrap_or(self.cue);
+        self.pos = start;
+        self.shadow = start;
+        self.scratch_target = start;
+        if !self.playing {
+            self.playing = true;
+            self.motor = 1.0;
+            self.keyboard_preview = true;
+        }
+    }
+
+    pub fn keyboard_release(&mut self) {
+        if self.keyboard_preview {
+            self.keyboard_preview = false;
+            self.stop_now();
+            self.pos = self.hot_cues.iter().flatten().next().copied().unwrap_or(self.cue);
         }
     }
 
@@ -262,7 +465,7 @@ impl Deck {
             return;
         }
         if self.playing && !self.cue_preview {
-            self.playing = false;
+            self.stop_now();
             self.pos = self.cue;
             return;
         }
@@ -271,6 +474,7 @@ impl Deck {
         }
         self.pos = self.cue;
         self.playing = true;
+        self.motor = 1.0;
         self.cue_preview = true;
     }
 
@@ -278,7 +482,7 @@ impl Deck {
     pub fn cue_release(&mut self) {
         if self.cue_preview {
             self.cue_preview = false;
-            self.playing = false;
+            self.stop_now();
             self.pos = self.cue;
         }
     }
@@ -313,7 +517,10 @@ impl Deck {
                 self.scratch_target = p;
                 if !self.playing {
                     self.playing = true;
+                    self.motor = 1.0;
                     self.hot_preview = Some(n);
+                } else if self.slip {
+                    self.hot_slip = Some(n);
                 }
             }
         }
@@ -322,10 +529,13 @@ impl Deck {
     pub fn hot_cue_release(&mut self, n: usize) {
         if self.hot_preview == Some(n) {
             self.hot_preview = None;
-            self.playing = false;
+            self.stop_now();
             if let Some(p) = self.hot_cues[n] {
                 self.pos = p;
             }
+        }
+        if self.hot_slip == Some(n) {
+            self.hot_slip = None;
         }
     }
 
@@ -451,14 +661,35 @@ impl Deck {
             playing: self.playing,
             position_s: self.position_s(),
             duration_s: self.to_secs(self.len()),
-            speed: if self.touched { self.scratch_speed } else if self.playing { self.speed() } else { 0.0 },
+            speed: if self.touched {
+                self.scratch_speed
+            } else if self.search != 0.0 {
+                self.search
+            } else if self.playing {
+                self.speed() * self.motor * if self.reverse { -1.0 } else { 1.0 }
+            } else {
+                0.0
+            },
             tempo: self.tempo(),
             bpm: self.bpm(),
             cue_s: self.cue_s(),
             looping: self.lp.is_some_and(|l| l.active),
             at_cue: self.is_loaded() && !self.playing && (self.pos - self.cue).abs() < 1.0,
             hot_cues: std::array::from_fn(|i| self.hot_cues[i].is_some()),
+            reverse: self.reverse,
+            slip: self.slip,
+            slip_diverged: self.slip && self.diverged(),
+            master_tempo: self.master_tempo,
+            key: self.key,
+            memory_cues: self.memory.len(),
+            auto_cue: self.auto_cue,
+            brake_s: self.brake_s,
         }
+    }
+
+    /// Playback differs from plain forward play (what slip mode returns from).
+    fn diverged(&self) -> bool {
+        self.touched || self.reverse || self.lp.is_some_and(|l| l.active) || self.hot_slip.is_some() || self.search != 0.0
     }
 
     /// Add this deck's audio (before channel fader / crossfader) to `out`, scaled by `gain`.
@@ -469,41 +700,83 @@ impl Deck {
         let len = pcm.len() as f64;
         // bend decays to zero within ~0.2 s
         let bend_decay = (-1.0 / (0.05 * f64::from(out_rate))).exp();
+        let motor_step = if self.brake_s > 0.0 { 1.0 / (self.brake_s * f64::from(out_rate)) } else { 1.0 };
         for o in out.iter_mut() {
+            // motor: vinyl start/brake ramp
+            let motor_target = if self.playing && !self.stopping { 1.0 } else { 0.0 };
+            if self.motor < motor_target {
+                self.motor = (self.motor + motor_step).min(1.0);
+            } else if self.motor > motor_target {
+                self.motor = (self.motor - motor_step).max(0.0);
+                if self.motor == 0.0 && self.stopping {
+                    self.stop_now();
+                }
+            }
+            let forward = self.speed() * self.motor;
             let speed = if self.touched {
                 // follow the platter: velocity proportional to the remaining distance
                 let v = (self.scratch_target - self.pos) / (0.01 * f64::from(pcm.sample_rate));
                 self.scratch_speed += (v - self.scratch_speed) * 0.05;
                 self.scratch_speed
+            } else if self.search != 0.0 {
+                self.search
             } else if self.playing {
-                self.speed()
+                if self.reverse { -forward } else { forward }
             } else {
                 0.0
             };
-            let audible = self.touched || self.playing;
+            let audible = self.touched || self.playing || self.search != 0.0;
             let target = if audible { 1.0 } else { 0.0 };
             if self.ramp < target {
                 self.ramp = (self.ramp + ramp_step).min(1.0);
             } else if self.ramp > target {
                 self.ramp = (self.ramp - ramp_step).max(0.0);
             }
-            if self.ramp > 0.0 {
-                let f = pcm.sample(self.pos);
+            // key lock / key shift
+            let mut pitch = 2f32.powf(self.key as f32 / 12.0);
+            if self.master_tempo && speed.abs() > 0.05 && !self.touched {
+                pitch /= speed.abs() as f32;
+            }
+            let shifting = (pitch - 1.0).abs() > 1e-3;
+            if self.ramp > 0.0 || shifting {
+                let mut f = pcm.sample(self.pos);
+                if shifting {
+                    f = self.shifter.process(f, pitch);
+                }
                 let g = gain * self.ramp;
                 o[0] += f[0] * g;
                 o[1] += f[1] * g;
             }
             self.pos += speed * ratio;
             if let Some(l) = self.lp {
+                let span = (l.end - l.start).max(1.0);
                 if l.active && speed > 0.0 && self.pos >= l.end {
-                    self.pos = l.start + (self.pos - l.end) % (l.end - l.start).max(1.0);
+                    self.pos = l.start + (self.pos - l.end) % span;
+                } else if l.active && speed < 0.0 && self.pos < l.start {
+                    self.pos = l.end - (l.start - self.pos) % span;
                 }
             }
+            // slip: the background position runs on as if nothing happened
+            if self.playing {
+                self.shadow += forward * ratio;
+            }
+            let diverged = self.diverged();
+            if !self.slip || (!diverged && !self.was_diverged) {
+                self.shadow = self.pos;
+            } else if self.was_diverged && !diverged {
+                self.pos = self.shadow.min(len);
+                self.scratch_target = self.pos;
+            }
+            self.was_diverged = self.slip && diverged;
             if self.pos >= len {
                 self.pos = len;
-                self.playing = false;
+                self.stop_now();
+                self.search = 0.0;
             } else if self.pos < 0.0 {
                 self.pos = 0.0;
+                if self.reverse || self.search < 0.0 {
+                    self.search = 0.0;
+                }
             }
             if !self.touched {
                 self.bend *= bend_decay;

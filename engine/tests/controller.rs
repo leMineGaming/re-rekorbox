@@ -45,6 +45,27 @@ FX1AdjustTime,FX1ReleaseFx,Rotary,B42D,,,,,,,,,,,\n\
 FX1-1Select.ECHO,ECHO,Button,B437,,,,,,,,,,,\n\
 FX1Assign.CH1,,Button,B427,,,,,,,,,,,\n\
 PAD1_PadFx1,PAD1.PadFx1,Pad,9020,5,6,7,8,9020,5,6,7,8,Fast,\n\
+Reverse,Reverse,Button,9021,0,1,2,3,9021,0,1,2,3,Fast,\n\
+Slip,Slip,Button,902C,0,1,2,3,902C,0,1,2,3,,\n\
+MasterTempo,MasterTempo,Button,9011,0,1,2,3,9011,0,1,2,3,,\n\
+VinylAdjustBrake,VinylAdjustBrake,KnobSlider,B01E,0,1,2,3,,,,,,,\n\
+Memory,Memory,Button,900A,0,1,2,3,,,,,,,\n\
+CallNext,CallNext,Button,900B,0,1,2,3,,,,,,,\n\
+Delete,Delete,Button,900D,0,1,2,3,,,,,,,\n\
+TimeMode,TimeMode,Button,900E,0,1,2,3,,,,,,,\n\
+AutoCue,TimeMode+LongPress,Button,900F,0,1,2,3,,,,,,,\n\
+4BeatLoopLongPress,LoopIn+LongPress,Button,9045,0,1,2,3,9045,0,1,2,3,Fast,\n\
+Master,Master,Button,901E,0,1,2,3,901E,0,1,2,3,,\n\
+InstDoubles,Sync+LongPress,Button,9047,0,1,2,3,,,,,,,\n\
+SearchFwd,SearchFwd,Button,9002,0,1,2,3,,,,,,,\n\
+Keyboard,HotCue+Shift,Button,9026,0,1,2,3,9026,0,1,2,3,Fast,\n\
+KeyShift,BeatLoop+Shift,Button,9027,0,1,2,3,9027,0,1,2,3,Fast,\n\
+PAD1_KeyShift,,Pad,9050,5,6,7,8,9050,5,6,7,8,Fast,\n\
+PAD3_Keyboard,,Pad,9042,5,6,7,8,9042,5,6,7,8,Fast,\n\
+JogTouch,JogTouch+Shift,JogTouch,9048,0,1,2,3,,,,,,RO,\n\
+SlipStateForFlashing,SlipStateForFlashing,Indicator,,,,,,,9B24,9B25,9B26,9B27,RO,\n\
+LoadedIndicator,LoadedIndicator,Indicator,,,,,,,9B00,9B01,9B02,9B03,RO,\n\
+ChannelLevel,ChannelLevel,Indicator,,,,,,B002,0,1,2,3,RO,\n\
 PAD9_PadFx2,,Pad,9068,5,6,7,8,9068,5,6,7,8,Fast,\n\
 PAD1_HotCue,PAD1.HotCue.Call,Pad,9000,5,6,7,8,9000,5,6,7,8,Fast,\n\
 PAD2_HotCue,PAD2.HotCue.Call,Pad,9001,5,6,7,8,9001,5,6,7,8,Fast,\n\
@@ -99,7 +120,7 @@ fn function_classification() {
     assert_eq!(target_of("PAD12_BeatLoop"), Some(Target::BeatLoopPad(7)));
     assert_eq!(target_of("PAD2.BeatJump"), Some(Target::BeatJumpPad(1)));
     assert_eq!(target_of("PAD9.HotCue.Call"), None, "only 8 hot cues");
-    assert_eq!(target_of("JogPitchBend"), None, "same message as JogScratch; the deck decides by touch");
+    assert_eq!(target_of("JogPitchBend"), Some(Target::NoOp), "same message as JogScratch; the deck decides by touch");
     assert_eq!(target_of("EQHigh"), Some(Target::Eq(2)));
     assert_eq!(target_of("CFXParameterCH3"), Some(Target::ColorKnob(2)));
 }
@@ -110,7 +131,7 @@ fn coverage_lists_handled_and_missing() {
     let (yes, no) = r.ctl.coverage();
     assert!(yes.contains("PlayPause") && yes.contains("PAD5_BeatLoop"));
     assert!(yes.contains("EQHigh") && yes.contains("CFX1On") && yes.contains("CFXParameterCH2"));
-    assert!(no.contains("JogPitchBend"));
+    assert!(yes.contains("JogPitchBend"), "deliberately mapped to no action");
 }
 
 #[test]
@@ -257,4 +278,53 @@ fn beat_fx_section_and_pad_fx() {
     assert_eq!(r.ctl.leds(&r.mixer.state()).iter().find(|l| l.status == 0x95 && l.data1 == 0x20).map(|l| l.value), Some(0x7F));
     assert_eq!(r.midi(&[0x95, 0x20, 0x00]), ["PadFx(0, None)"]);
     assert_eq!(r.midi(&[0x96, 0x68, 0x7F]), ["PadFx(1, Some((1, 8)))"]);
+}
+
+#[test]
+fn deck_modes_memory_and_indicators() {
+    use rbx_engine::controller::PadMode;
+    let mut r = Rig::new();
+    assert_eq!(r.midi(&[0x90, 0x21, 0x7F]), ["Reverse(0, true)"]);
+    assert_eq!(r.midi(&[0x90, 0x21, 0x7F]), ["Reverse(0, false)"], "toggle");
+    assert_eq!(r.midi(&[0x90, 0x2C, 0x7F]), ["Slip(0, true)"]);
+    assert_eq!(r.midi(&[0x90, 0x11, 0x7F]), ["MasterTempo(0, true)"]);
+    assert_eq!(r.midi(&[0xB0, 0x1E, 0x7F]), ["Brake(0, 3.0)"]);
+    r.midi(&[0xB0, 0x1E, 0x00]);
+    assert_eq!(r.midi(&[0x90, 0x0A, 0x7F]), ["MemoryStore(0)"]);
+    assert_eq!(r.midi(&[0x90, 0x0B, 0x7F]), ["MemoryCall(0, true)"]);
+    assert_eq!(r.midi(&[0x90, 0x0D, 0x7F]), ["MemoryDelete(0)"]);
+    assert!(r.midi(&[0x90, 0x0E, 0x7F]).is_empty(), "time mode is display state only");
+    assert!(r.ctl.time_remaining(0));
+    assert_eq!(r.midi(&[0x90, 0x0F, 0x7F]), ["AutoCue(0, true)"]);
+    assert_eq!(r.midi(&[0x90, 0x45, 0x7F]), ["BeatLoop(0, 4.0)"]);
+    assert_eq!(r.midi(&[0x91, 0x1E, 0x7F]), ["SetMaster(Some(1))"]);
+    assert_eq!(r.midi(&[0x91, 0x1E, 0x7F]), ["SetMaster(None)"], "toggle off");
+    assert_eq!(r.midi(&[0x91, 0x47, 0x7F]), ["InstantDouble(1)"]);
+    assert_eq!(r.midi(&[0x90, 0x02, 0x7F]), ["Search(0, 4.0)"]);
+    assert_eq!(r.midi(&[0x90, 0x02, 0x00]), ["Search(0, 0.0)"]);
+    assert!(r.midi(&[0x90, 0x48, 0x7F]).is_empty(), "JogTouch+Shift: deliberately no action");
+    // pad modes, key shift and keyboard pads
+    assert!(r.midi(&[0x90, 0x27, 0x7F]).is_empty());
+    assert_eq!(r.ctl.pad_mode(0), PadMode::KeyShift);
+    assert_eq!(r.midi(&[0x95, 0x50, 0x7F]), ["Key(0, 1)"]);
+    assert_eq!(r.midi(&[0x95, 0x50, 0x7F]), ["Key(0, 0)"], "same pad again resets");
+    r.midi(&[0x90, 0x26, 0x7F]);
+    assert_eq!(r.ctl.pad_mode(0), PadMode::Keyboard);
+    assert_eq!(r.midi(&[0x95, 0x42, 0x7F]), ["KeyboardPress(0, 2)"]);
+    assert_eq!(r.midi(&[0x95, 0x42, 0x00]), ["KeyboardRelease(0)"]);
+    // LEDs and indicators
+    r.mixer.apply(Command::Play(0));
+    r.run(0.2);
+    let leds = r.ctl.leds(&r.mixer.state());
+    let led = |st: u8, d1: u8| leds.iter().find(|l| l.status == st && l.data1 == d1).map(|l| l.value);
+    assert_eq!(led(0x90, 0x2C), Some(0x7F), "slip LED");
+    assert_eq!(led(0x90, 0x11), Some(0x7F), "master tempo LED");
+    assert_eq!(led(0x90, 0x26), Some(0x7F), "keyboard mode LED");
+    assert_eq!(led(0x90, 0x27), Some(0), "key shift mode LED off");
+    assert_eq!(led(0x95, 0x42), Some(0x7F), "keyboard pad of the current key");
+    assert_eq!(led(0x9B, 0x00), Some(0x7F), "loaded indicator deck 1");
+    assert!(led(0xB0, 0x02).is_some(), "channel level meter is driven");
+    let (yes, no) = r.ctl.coverage();
+    assert!(yes.contains("JogTouch+Shift") && yes.contains("Sync+LongPress"));
+    assert!(no.is_empty(), "every input row of the test mapping is handled: {no:?}");
 }

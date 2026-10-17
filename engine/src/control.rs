@@ -13,7 +13,7 @@
 //! skip 1 -2.5 | jump 1 4               relative seconds / beat jump (negative = back)
 //! vol 1 0.8 | trim 1 1.2 | quant 1 on  channel settings
 //! sync 2                               match deck 2 to deck 1
-//! xf -1 | master 0.9                   crossfader −1..1, master gain
+//! xf -1 | gain 0.9                     crossfader −1..1, master gain
 //! eq 1 low 0.2 | eq 2 high 0.5         EQ knob 0..1 (0.5 flat, 0 kill)
 //! cfx filter|space|echo|sweep|noise|crush|off   Sound Color FX type
 //! color 1 0.2 | sub 0.7                Color FX knob of a channel (0.5 off), sub-parameter
@@ -23,6 +23,12 @@
 //! fxbeat up|down | fxbpm 128|auto      beat fraction, tempo (tapped value or automatic)
 //! fxassign 1|2|master|sampler          where the Beat FX is inserted
 //! padfx 1 1 5 | padfx 1 off            Pad FX of deck 1: bank 1, slot 5 (held) / release
+//! reverse 1 on | slip 1 on | mt 1 on   reverse, slip mode, master tempo (key lock)
+//! key 1 -2 | brake 1 1.5 | autocue 1 on   key shift (semitones), vinyl brake time, auto cue
+//! mem 1 | call 1 next|prev | memdel 1  memory cues
+//! search 1 4 | search 1 0              search button held at a speed / released
+//! kbd 1 5 | kbdup 1                    keyboard pad (semitones) pressed / released
+//! double 2 | master 1|auto             instant double, sync master
 //! ```
 //! A script is `time:command; time:command; …` with times in seconds, e.g.
 //! `0:play 1; 4:bpm 2 124; 4:sync 2; 4:play 2; 8:xf 1`.
@@ -46,6 +52,14 @@ fn slot(s: Option<&str>) -> Result<usize, String> {
     match num::<usize>(s, "hot cue number")? {
         n @ 1..=8 => Ok(n - 1),
         _ => Err("hot cue number must be 1..8".into()),
+    }
+}
+
+fn on_off(s: Option<&str>) -> Result<bool, String> {
+    match s {
+        Some("on" | "1" | "true") => Ok(true),
+        Some("off" | "0" | "false") => Ok(false),
+        _ => Err("expected on or off".into()),
     }
 }
 
@@ -160,7 +174,29 @@ pub fn parse(line: &str) -> Result<Command, String> {
             None => return Err("padfx <deck> <bank> <slot> | padfx <deck> off".into()),
         }),
         "xf" => Crossfader(num(a, "crossfader value")?),
-        "master" => MasterGain(num(a, "master gain")?),
+        "reverse" => Reverse(deck(a)?, on_off(b)?),
+        "slip" => Slip(deck(a)?, on_off(b)?),
+        "mt" => MasterTempo(deck(a)?, on_off(b)?),
+        "autocue" => AutoCue(deck(a)?, on_off(b)?),
+        "key" => Key(deck(a)?, num(b, "semitones")?),
+        "brake" => Brake(deck(a)?, num(b, "seconds")?),
+        "mem" => MemoryStore(deck(a)?),
+        "call" => MemoryCall(deck(a)?, match b {
+            Some("next") => true,
+            Some("prev") => false,
+            _ => return Err("call <deck> next|prev".into()),
+        }),
+        "memdel" => MemoryDelete(deck(a)?),
+        "search" => Search(deck(a)?, num(b, "speed")?),
+        "kbd" => KeyboardPress(deck(a)?, num(b, "semitones")?),
+        "kbdup" => KeyboardRelease(deck(a)?),
+        "double" => InstantDouble(deck(a)?),
+        "master" => match a {
+            Some("auto") => SetMaster(None),
+            Some("1" | "2") => SetMaster(Some(deck(a)?)),
+            _ => MasterGain(num(a, "master gain")?),
+        },
+        "gain" => MasterGain(num(a, "master gain")?),
         other => return Err(format!("unknown command {other:?}")),
     })
 }

@@ -201,8 +201,19 @@ fn load_mapping(path: &Path) -> Result<rekordbox_formats::midi::MidiMapping, Str
 fn coverage(path: &Path) -> Result<(), String> {
     let c = Controller::new(load_mapping(path)?);
     let (yes, no) = c.coverage();
-    println!("{}: {} functions handled, {} not handled", c.mapping().device, yes.len(), no.len());
-    println!("handled:     {}", yes.into_iter().collect::<Vec<_>>().join(", "));
+    let (ignored, active): (Vec<_>, Vec<_>) =
+        yes.into_iter().partition(|f| rbx_engine::controller::ignore_reason(f).is_some());
+    println!(
+        "{}: {} functions handled, {} deliberately without action, {} not handled",
+        c.mapping().device,
+        active.len(),
+        ignored.len(),
+        no.len()
+    );
+    println!("handled:     {}", active.join(", "));
+    for f in &ignored {
+        println!("no action:   {f} ({})", rbx_engine::controller::ignore_reason(f).unwrap_or(""));
+    }
     println!("not handled: {}", no.into_iter().collect::<Vec<_>>().join(", "));
     Ok(())
 }
