@@ -135,6 +135,13 @@ Struktur: `{"embedding": {"d2": str, "d3": str(32 Hex = 128 bit), "d4": f64, "d5
 Inferenz: Merkmalsvektor (Embedding) für die Track-Empfehlung (`networkRecommend.db`, `models/embed_model`);
 `d11` sah im Beispiel wie BPM aus (148,98). Semantik der Schlüssel unbekannt (U13).
 
+**Lokale Analyse-Bibliothek** [OBS: `%APPDATA%\Pioneer\rekordbox\share\PIONEER\USBANLZ`, 1831 Ordner,
+2026-10-17]: ein Ordner je Track (`<3 Ziffern>/<UUID-artiger Name>/ANLZ0000.{DAT,EXT,2EX,3EX}`). `PPTH` enthält
+dort nur `?/` + Dateiname (Verzeichnis ersetzt); die Zuordnung zur Audiodatei geht daher nur über den Dateinamen
+(1825/1831 gefunden, 359 Namen mehrfach als Kopien). `PVB2` u64 @0x10 = Länge in Samples (passt zur
+Audiodauer). In keinem der 1831 Ordner sind Cue-Punkte gespeichert (`PCOB` leer, `PCO2` ohne Einträge) –
+Cues liegen bei dieser Installation nur in der verschlüsselten Datenbank. 265 Beatgrids haben wechselndes Tempo.
+
 ## 5b. ANLZ – Code-Belege aus dem Dekompilat (Ghidra 12.1.4)
 
 Belegtyp **[GH:addr]** = Ghidra-Dekompilat von `rekordbox.exe` (SHA-256 `c9ed23e9…1c37`), Funktion an `addr`.

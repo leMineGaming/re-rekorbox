@@ -34,6 +34,15 @@ Wichtige Textbefehle im `play`-Modus (vollständige Liste in `src/control.rs`): 
 `brake 1 1.5`, `mem 1` / `call 1 next`, `sample 3`, `hp 1 on`, `xfcurve 0.8`, `load 2 <datei>`, `browse`,
 `state`, `quit`.
 
+## Bibliothek
+
+`rbx-play play` liest beim Start im Hintergrund die rekordbox-Analysen (`%APPDATA%\Pioneer\rekordbox\share\PIONEER\USBANLZ`)
+und ordnet sie den Dateien im Musik-Ordner zu (`--anlz DIR`, `--music DIR`, abschalten mit `--no-library`).
+Jede geladene Datei – über `load`, Browser, Controller oder `lload` – bekommt automatisch Beatgrid, **genaue
+Beat-Positionen** (auch bei Tempowechseln: Sync, Quantize, Beat-Loop und Beat Jump folgen ihnen), Hot Cues und
+Memory Cues (sofern in den Analysedateien gespeichert). `lib <Wörter>` sucht (Interpret/Titel/Dateiname),
+`lload <Deck> <Nr>` lädt ein Suchergebnis, im Browser erscheint `[Library]` an oberster Stelle.
+
 ## Pioneer DJ XDJ-RX3
 
 ```bash
@@ -84,7 +93,7 @@ offen (SPEC U28–U31).
 
 ## Tests
 
-`cargo test -p rbx-engine`: 56 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
+`cargo test -p rbx-engine`: 61 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
 MIDI-Gerät nötig): Decoder, Deck, Loops, Sync, Jog, EQ-Frequenzgang, Color FX, alle 14 Beat FX
 (Zeitpunkt, Gate-Anteil, Tonhöhe, Bremse), Tap-Tempo, Reverse, Slip, Key Lock, Key Shift, Bremse,
 Memory Cues, Auto Cue, Sampler, Cue-Bus, Crossfader-Kurve, Browser und die Controller-Zuordnung samt LEDs.
@@ -96,5 +105,5 @@ Memory Cues, Auto Cue, Sampler, Cue-Bus, Crossfader-Kurve, Browser und die Contr
 - Ganze Dateien im Speicher; kein Streaming.
 - Key Lock / Key Shift über einen einfachen granularen Pitch-Shifter (hörbare Artefakte bei großen Werten).
 - Effekte sind eigene, einfache Umsetzungen, keine Nachbildung des Pioneer-Klangs.
-- Beatgrid nur manuell (`bpm`) oder vom Click-Track; ANLZ-Beatgrids kommen mit der Bibliothek (MVP-Schritt 1).
+- Cues aus der verschlüsselten rekordbox-Datenbank sind nicht verfügbar (nur aus den Analysedateien).
 - Ohne 4-Kanal-Ausgabegerät ist der Kopfhörer-Cue nicht hörbar.

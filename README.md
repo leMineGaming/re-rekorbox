@@ -23,7 +23,8 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `djlink_participant` | Teilnahme am DJ-Link-Netz als Zustandsmaschine: Discovery, Nummernvergabe (0x11, 0x12, 0x29–0x2C), Keep-alive alle 2 s, Konflikt, Alterung | §5i |
 | `djlink_net` | UDP-Betrieb der Teilnahme (Ports 50000–50002), Empfang fremder Beat-/Statuspakete, eigene Beat-Pakete, Beat-Uhr | §5i |
 | `netif` | IPv4-Netzwerkadapter mit MAC und Broadcast-Adresse (Windows `GetAdaptersAddresses`) | – |
-| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `midi-route`, `midi-decode`, `midi-devices`, `midi-monitor`, `pad`, `edb`, `djlink-listen` | – |
+| `library` | Track-Bibliothek aus dem rekordbox-Analyseordner (ohne Datenbank): Zuordnung zu Audiodateien über den Dateinamen, Beatgrid, Cues (falls gespeichert), Phrasen, Länge; Suche | §5a |
+| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `midi-route`, `midi-decode`, `midi-devices`, `midi-monitor`, `pad`, `edb`, `djlink-listen`, `library` | – |
 
 Dazu im Workspace: **[`engine/`](engine/README.md)** – Zwei-Deck-Audio-Engine (`rbx-engine`, Programm `rbx-play`),
 Eigenentwurf für das MVP, nicht aus dem rekordbox-Code abgeleitet: EQ, Sound Color FX, 14 Beat FX, Pad FX,
@@ -39,7 +40,7 @@ cargo test --workspace
 
 77 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
 25 für ANLZ, 14 für rekordbox.xml, 9 für MIDI-Mappings, 9 für die MIDI-Eingangsverarbeitung, 5 für Pad-Dateien,
-4 für DeviceSQL, 21 für DJ Link (davon 2 über echte UDP-Sockets auf 127.0.0.1), 1 Doku-Test; dazu 56 Tests der Audio-Engine inkl. Effekten und Controller-Anbindung (`engine/`).
+4 für DeviceSQL, 3 für die Bibliothek, 21 für DJ Link (davon 2 über echte UDP-Sockets auf 127.0.0.1), 1 Doku-Test; dazu 61 Tests der Audio-Engine inkl. Effekten und Controller-Anbindung (`engine/`).
 
 ## CLI
 
@@ -61,6 +62,7 @@ cargo run --release --bin rbf -- check "%APPDATA%\Pioneer\rekordbox\share\PIONEE
 | `rbf midi-devices` | MIDI-Ein-/Ausgänge auflisten (Windows) |
 | `rbf midi-monitor <mapping> [gerät] [s]` | Live-MIDI eines Controllers mit einem Mapping dekodieren (Windows) |
 | `rbf djlink-listen [s] [--raw]` | DJ-Link-Verkehr auf UDP 50000–50002 nur mithören und dekodieren, Gerätetabelle ausgeben |
+| `rbf library [analyse] [musik] [suche]` | Bibliothek aus dem Analyseordner bauen (Standard: rekordbox-Ordner und Musik-Ordner), Statistik und Suche |
 
 ### Pioneer DJ XDJ-RX3
 
@@ -81,7 +83,8 @@ ekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv"`
 **Validierung gegen eine echte Bibliothek** (lokal, 2026-10-16; Ausgabe in `analysis/check_report.txt`):
 7307 Dateien (1831 DAT, 1827 EXT, 1826 2EX, 1823 3EX), **0 Fehler** – alle 5484 Container byte-identisch
 zurückgeschrieben, alle typisierten Tags identisch neu kodiert, alle 23 431 Phrasen mit Label.
-Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round-Trips identisch
+Bibliothek (2026-10-17): 1831 Analyseordner, 1825 Audiodateien zugeordnet, 1805 mit Beatgrid (265 mit
+Tempowechsel), 1794 mit Phrasen, keine gespeicherten Cues. Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round-Trips identisch
 (`analysis/midi_report.txt`).
 
 ## Grenzen
