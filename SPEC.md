@@ -529,6 +529,60 @@ Bekannte Schlüssel: `RO`, `Fast`, `Blink`, `Value`, `Min`, `Max`, `Priority`, `
 KnobSlider 232, Value 215, JogRotate 154, Parameter 140, JogTouch 78, Difference 39, JogIndicator 25, Slider 6,
 IndicatorHiRes 5, RotaryAsKnob 4, leer 4, JogIndicatorHiRes 3, RawValue 3, JogRotateAbsPos 1, JogTimestamp 1.
 
+## 5f-2. MIDI-Eingangsverarbeitung je Steuerelement-Typ
+
+Belege: MIDI-Eingang über WinMM `midiInOpen` mit Rückruf GH:0x1410692b0 [GH:0x141069830]; Geräteklasse
+`djplay::DeviceMidi` (vtable 0x143dbaf18, Hauptroutine GH:0x1424b9dc0). Pro Zuordnung legt die Fabrik
+GH:0x14252aa10 ein Steuerobjekt nach Typ-Code an (Basiskonstruktor GH:0x14252b6d0). Die Verarbeitung eines
+eingehenden Werts ist vtable-Slot 35 (+0x118) der Klasse; Slot 26 (+0xD0) ist eine Werttransformation, die den
+„aktuellen Wert“ (Objekt +0x110) setzt (Standard GH:0x1424be830: unverändert).
+
+- **Schlüssel** einer Nachricht = `Status << 8 | Datenbyte 1` (so stehen die Nachrichten in der CSV, §5f).
+  **Wert** = Datenbyte 2 (bei Nachrichten mit ≤ 2 Bytes: 0). **Zeitstempel** = Nachrichtenzeit (s) × 1000.
+- **Optionsfelder** im Objekt (aus der Reihenfolge im Konstruktor erschlossen, Unsicherheit U26): `Blink` +0xD8,
+  `Value` +0xDC, `Min` +0xE0, `Max` +0xE4, `Priority` +0xE8; fehlende Zahl-Option = −1.
+- **Button** (0) [GH:0x14252c700 + Transformation GH:0x14252d3d0]: Werte > 0x7F werden ignoriert.
+  **Zustand = (Wert ≠ 0)**. Aktueller Wert: bei Wert ∈ {1…62, 64, 127} = `Max` (−1 → 0x7F), sonst (0, 63, 65…126)
+  = `Min` (−1 → 0).
+- **Pad** – Klasse je Gerät (§5f, Typ-Codes 0x1D–0x21):
+  - `DdjRxPad` 0x1E (u. a. **XDJ-RX3**) und `DdjRzPad` 0x1D [GH:0x14252c760]: aktueller Wert = Wert;
+    Wert 0 → *losgelassen*, Wert 0x7F → *gedrückt*, jeder andere Wert → Wertänderung ohne Zustandswechsel
+    (Anschlagstärke/Druck).
+  - `DdjSxPad` 0x21 (Standard), `DdjSzPad` 0x1F, `DdjSx2Pad` 0x20: wie Button (Zustand = Wert ≠ 0), Transformation
+    0x21 [GH:0x14252d5a0]: gedrückt-Werte wie Button → 0x7F, sonst 0; 0x1F [GH:0x14252d5d0]: Wert > 0x40 → 0, sonst
+    Wert; 0x20 [GH:0x14252d4f0]: Wert > 0x40 → 0; 0x1F → 0x20; 0x20…0x22 → +2; 0x23…0x27 → +1; 0x28/0x29 → 0x2A;
+    sonst Wert.
+- **JogRotate** (0x16/0x17) [GH:0x14252c840]: **Delta = Wert − 0x40**, mit Zeitstempel an das Jog-Objekt.
+- **Difference** (0x0C) [GH:0x14252c7b0]: Delta = Wert − 0x40 (Jog-Suche), mit Zeitstempel.
+- **JogTouch** (0x1A) [GH:0x14252ca30]: berührt = (Wert == 0x7F), mit Zeitstempel.
+- **Rotary** (0x0D) [GH:0x14252cbf0, Fabrik]: Delta d: Wert 1…30 → +Wert; 98…127 → Wert − 128; 65…94 und 34…63 →
+  Wert − 64; sonst Wert unverändert. **Beschleunigung** standardmäßig an mit Faktor f = 2,22; mit `Value`-Option
+  f = `Value` × 0,01 (Konstante @0x1457ff5d8) und an nur bei `Value` > 0. Mit Beschleunigung: d < 0 →
+  max(−29, −trunc(f^(−d−1))); d ≥ 0 → min(30, trunc(f^(d−1))) (Überlauf < 0 → 0). Die Potenzfunktion
+  GH:0x14299fd40 wird als `pow` angenommen (Unsicherheit U27).
+- **RotaryAsKnob** (0x0E) [GH:0x14252cd00, Fabrik]: Endwert `M` = `Value`-Option (> 0, höchstens 0x3FFF; sonst 0x7F);
+  Startwert = round(M × 0,5). Wert 1…63 → +Wert; 64…127 → Wert − 128; 0 → keine Änderung; Ergebnis auf 0…M begrenzt.
+  Ausgabe = trunc(Akku / M × 16383,0) (Konstante @0x143980b08).
+- **KnobSlider** (6) und **Value** (0x0F) [GH:0x14252cac0, Fabrik]: `min` = `Min` (fehlt/ > 0x3FFF → 0); `max` = `Max`,
+  wenn < 0x4000, sonst **0x3FFF bei KnobSlider, 0x7F bei Value**; `center = (max − min + 1) / 2` (ganzzahlig, dann
+  double). Wert < 64 → `min + Wert · center / 64`; Wert = 64 → `min + center`; Wert > 64 →
+  `min + center + (Wert − 64) · ((max − min) − center) / 63` (Konstanten 1/64, 1/63 @0x143dcb048/050); Ergebnis
+  ganzzahlig abgeschnitten.
+- **RawValue** (0x10) [GH:0x14252cba0]: Wert unverändert (über Transformation) weitergeben.
+- **14-Bit** (`Slider` 4, `Knob` 5, `KnobSliderHiRes` 7/8): Registrierung mit Nachricht `m` (MSB-Objekt, Klasse 9)
+  und `m + 0x20` (LSB-Objekt) [GH:0x1424c4e60]. MSB [GH:0x14252d2a0]: speichert `Wert << 7`, **keine Meldung**.
+  LSB [GH:0x14252d250]: hält einen Zeiger auf das MSB-Objekt, setzt dort `gespeichert |= Wert` (ODER, kein
+  Ersetzen) und meldet den 14-Bit-Wert. Typ 8 mit `(m & 0xF0FF) == 0xB004` (DDJ-SX2) verwendet Klasse 0x0B mit
+  zusätzlicher Polynomkurve [GH:0x14252cda0] – nicht nachgebaut.
+- **Parameter** (0x1C) und **Toggle** (0x1B): Slot 35 ist leer (Verarbeitung über andere Wege, nicht bestimmt).
+- **Geräteaktivierung** [GH:0x1424b9dc0]: ohne MIDI-Ausgang wird die Verbindung abgebrochen („MIDI output is not
+  found“); beim Verbinden werden die Sonderzeilen `@Activate`/`@ActivateEnd` abgefragt (in keiner mitgelieferten CSV).
+- **XDJ-RX3** [OBS `MidiMappings/XDJ-RX3.midi.csv`, 231 Zeilen]: 128 Pad (→ 0x1E), 83 Button, 18 KnobSlider,
+  4 Rotary, 4 JogRotate, 3 Indicator, 2 Parameter, 2 JogTouch, je 1 Value/KnobSliderHiRes/Difference. Beispiele:
+  `JogScratch` JogRotate `B022`, `JogTouch` `9020`, `JogSearch` Difference `B029`, `TempoSlider` KnobSliderHiRes
+  `B000` (+ LSB `B020`), `NeedleSearch` Value `B01C` (`Max=16383`), Pads `9000…` auf Kanälen 5–8.
+  Decks 1–4 = MIDI-Kanäle 0–3.
+
 ## 5g. Performance-Pad-Dateien (`pad/*.pad.csv`, `pad/Version`)
 
 Belege: 36 mitgelieferte Dateien [OBS]; Zeilen-Parser [GH:0x141c16c30], Modusliste [GH:0x141c10020],
@@ -620,7 +674,9 @@ groß und ohne Beispieldatei nicht gegenprüfbar. Benötigt wird ein USB-/Ordner
 | U22 | ~~Escaping~~ → **geklärt** (5e: Attribute ohne Zeichen < 0x20; Ausgabeformat CRLF, Umbruch 60) | – |
 | U23 | `export.pdb`: Engine/Strings/Zeilen belegt (5h); offen: Seitenformat der persistenten Datei | USB-/Ordner-Export als Testdatei |
 | U24 | ~~BOM vor `@file`~~ → **geklärt** (5f: Kopfzeile per Teilstring-Suche, BOM bleibt in Feld 0) | – |
-| U25 | MIDI-CSV: Bedeutung der Typ-Codes 1–3, 9–11, 0x15, 0x16 (kein Text bekannt) und Semantik von `Fast`/`RO`/`Priority` | Nutzer der Mapping-Struktur |
+| U25 | MIDI-CSV: Bedeutung der Typ-Codes 1–3, 0x15, 0x16 (kein Text bekannt; 9–11 = interne 14-Bit-Klassen, 5f-2) und Semantik von `Fast`/`RO`/`Priority` | Nutzer der Mapping-Struktur |
+| U26 | MIDI-Steuerobjekt: Zuordnung der Options-Felder (+0xD8…+0xE8 = Blink, Value, Min, Max, Priority) nur aus der Reihenfolge erschlossen | Rotary/RotaryAsKnob-Verhalten |
+| U27 | Rotary-Beschleunigung: GH:0x14299fd40 als `pow(f, n)` angenommen; Toggle/Parameter/JogRotateAbsPos/JogTimestamp-Eingang nicht bestimmt | Browse-Encoder-Feinverhalten |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |

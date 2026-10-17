@@ -50,6 +50,17 @@ public class RbQuery extends GhidraScript {
                 case "strrange": strrange(toAddr(a[2]), toAddr(a[3])); break;
                 case "asm": asm(a[2]); break;
                 case "imm": imm(Arrays.copyOfRange(a, 2, a.length)); break;
+                case "decompat":
+                    // create a temporary function at each address (read-only project: nothing is saved), then decompile
+                    for (int i = 2; i < a.length; i++) {
+                        Address ad = toAddr(a[i]);
+                        if (getFunctionAt(ad) == null) {
+                            disassemble(ad);
+                            createFunction(ad, null);
+                        }
+                        decomp(a[i]);
+                    }
+                    break;
                 default: out.println("unknown command " + a[1]);
             }
         } finally {

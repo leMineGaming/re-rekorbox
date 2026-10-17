@@ -5,6 +5,11 @@
 //! rbf check <directory>          parse every ANLZ file below <directory>, verify byte-exact round trips
 //! rbf xml   <rekordbox.xml>      summarise a rekordbox.xml
 //! rbf xml-rewrite <in> <out>     read and write a rekordbox.xml with this implementation
+//! rbf midi <file|dir>            validate MIDI mapping CSV files
+//! rbf midi-route <mapping>       list the input messages a mapping listens to, per control type
+//! rbf midi-decode <mapping> <hex bytes>...   process messages offline, e.g. `B0 22 41 97 00 7F`
+//! rbf midi-devices               list MIDI input/output devices (Windows)
+//! rbf midi-monitor <mapping> [device] [seconds]   decode live MIDI input with a mapping (Windows)
 //! ```
 
 use rekordbox_formats::anlz::waveform::WavePreview;
@@ -24,8 +29,14 @@ fn main() -> ExitCode {
         ["midi", p] => check_midi(Path::new(p)),
         ["pad", d] => check_pads(Path::new(d)),
         ["edb", f] => show_edb(Path::new(f)),
+        ["midi-route", m] => midi_route(Path::new(m)),
+        ["midi-decode", m, bytes @ ..] => midi_decode(Path::new(m), bytes),
+        #[cfg(windows)]
+        ["midi-devices"] => midi_devices(),
+        #[cfg(windows)]
+        ["midi-monitor", m, rest @ ..] => midi_monitor(Path::new(m), rest),
         _ => Err(
-            "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir>"
+            "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir> | rbf midi-route <mapping>              | rbf midi-decode <mapping> <hex>... | rbf midi-devices | rbf midi-monitor <mapping> [device] [seconds]"
                 .into(),
         ),
     };
@@ -339,4 +350,118 @@ fn rewrite_xml(input: &Path, output: &Path) -> R {
     let s = std::fs::read_to_string(input).map_err(|e| e.to_string())?;
     let doc = xml::from_str(&s).map_err(|e| e.to_string())?;
     std::fs::write(output, xml::to_string(&doc)).map_err(|e| e.to_string())
+}
+
+fn load_processor(path: &Path) -> Result<rekordbox_formats::midi_input::InputProcessor, String> {
+    use rekordbox_formats::{midi, midi_input::InputProcessor};
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let m = midi::parse(&text);
+    if !m.is_valid() {
+        return Err(format!("{}: not a version 1 mapping file", path.display()));
+    }
+    Ok(InputProcessor::new(m))
+}
+
+fn midi_route(path: &Path) -> R {
+    let p = load_processor(path)?;
+    let m = p.mapping();
+    let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
+    for e in &m.entries {
+        if !e.input_bindings(&m.device).is_empty() {
+            *by_type.entry(format!("{} (0x{:02X})", e.type_text, e.control_code(&m.device))).or_default() += 1;
+        }
+    }
+    println!("device {:?}: {} rows, {} input messages", m.device, m.entries.len(), p.listened_keys().len());
+    for (t, n) in &by_type {
+        println!("  {t:<28} {n:>4} input rows");
+    }
+    for &(i, code) in p.unhandled() {
+        let e = &m.entries[i];
+        println!("  no input handler: line {} {} ({} 0x{code:02X})", e.line, e.name, e.type_text);
+    }
+    Ok(())
+}
+
+fn print_events(p: &mut rekordbox_formats::midi_input::InputProcessor, msg: &rekordbox_formats::midi_input::MidiMessage) {
+    let bytes = match msg.data2 {
+        Some(d2) => format!("{:02X} {:02X} {:02X}", msg.status, msg.data1, d2),
+        None => format!("{:02X} {:02X}   ", msg.status, msg.data1),
+    };
+    let evs = p.process(msg);
+    if evs.is_empty() {
+        let note = if p.listens(msg.key()) { "(stored, reported with the next message)" } else { "(not mapped)" };
+        println!("{:>10.3}s  {bytes}  {note}", msg.time_s);
+    }
+    for ev in evs {
+        let e = p.entry(&ev);
+        let deck = if ev.deck == 0 { "  -".to_string() } else { format!("D{}", ev.deck) };
+        println!("{:>10.3}s  {bytes}  {deck}  {:<24} {:?}", msg.time_s, e.function, ev.action);
+    }
+}
+
+fn midi_decode(path: &Path, hex: &[&str]) -> R {
+    use rekordbox_formats::midi_input::{message_len, MidiMessage};
+    let mut p = load_processor(path)?;
+    let bytes: Vec<u8> = hex
+        .iter()
+        .map(|h| u8::from_str_radix(h.trim_start_matches("0x"), 16).map_err(|e| format!("{h}: {e}")))
+        .collect::<Result<_, _>>()?;
+    let mut i = 0;
+    while i < bytes.len() {
+        let len = message_len(bytes[i]).min(bytes.len() - i);
+        let msg = MidiMessage::from_bytes(&bytes[i..i + len], 0.0).ok_or(format!("byte {i}: not a status byte"))?;
+        print_events(&mut p, &msg);
+        i += len;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn midi_devices() -> R {
+    use rekordbox_formats::midi_device::{list_inputs, list_outputs};
+    println!("inputs:");
+    for d in list_inputs() {
+        println!("  {:>2}  {}", d.index, d.name);
+    }
+    println!("outputs:");
+    for d in list_outputs() {
+        println!("  {:>2}  {}", d.index, d.name);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn midi_monitor(path: &Path, rest: &[&str]) -> R {
+    use rekordbox_formats::midi_device::{list_inputs, InputPort};
+    use rekordbox_formats::midi_input::MidiMessage;
+    use std::time::{Duration, Instant};
+    let mut p = load_processor(path)?;
+    let inputs = list_inputs();
+    // default device: the one whose name contains the mapping's device name
+    let wanted = rest.first().copied().unwrap_or(p.mapping().device.as_str()).to_string();
+    let dev = inputs
+        .iter()
+        .find(|d| wanted.parse::<u32>().ok() == Some(d.index))
+        .or_else(|| inputs.iter().find(|d| d.name.to_lowercase().contains(&wanted.to_lowercase())))
+        .ok_or(format!("no MIDI input matching {wanted:?} (see `rbf midi-devices`)"))?;
+    let seconds: Option<u64> = rest.get(1).and_then(|s| s.parse().ok());
+    let (_port, rx) = InputPort::open(dev.index)?;
+    println!("listening on {} ({}) with mapping {:?}; Ctrl+C to stop", dev.index, dev.name, p.mapping().device);
+    let start = Instant::now();
+    loop {
+        if let Some(s) = seconds {
+            if start.elapsed() >= Duration::from_secs(s) {
+                return Ok(());
+            }
+        }
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok((packed, ms)) => {
+                if let Some(msg) = MidiMessage::from_packed(packed, f64::from(ms) / 1000.0) {
+                    print_events(&mut p, &msg);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
