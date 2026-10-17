@@ -31,6 +31,7 @@ fn collect(p: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn main() -> ExitCode {
+    rbx_engine::session::install_crash_handler("rbx-analyze");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut inputs = Vec::new();
     let (mut out, mut force, mut missing, mut compare, mut threads, mut limit) = (None, false, false, false, 0usize, usize::MAX);

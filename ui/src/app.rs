@@ -10,6 +10,7 @@ use rbx_engine::mixer::{Command, MixerState, DECKS};
 use rbx_engine::output::Output;
 use rbx_engine::session::{fill_sampler, start_controller, start_link, ControllerHandle, LinkHandle, Loader, Log};
 
+use crate::settings::Settings;
 use crate::tracks::{build_rows, filter, RowSource, TrackRow};
 use crate::widgets::{self, DetailAction, ACCENT, CUE_COLOR, HOT_CUE_COLORS};
 
@@ -29,6 +30,11 @@ pub struct Options {
     pub samples: Option<PathBuf>,
     /// Sources to load into deck 1 and 2.
     pub load: Vec<String>,
+    /// Append messages to this file.
+    pub log_file: Option<PathBuf>,
+    /// Settings as loaded (changes made in the window are saved to `settings_path`).
+    pub settings: Settings,
+    pub settings_path: Option<PathBuf>,
 }
 
 /// Per-deck UI state that the engine does not report back.
@@ -72,11 +78,20 @@ pub struct App {
     midi_path: String,
     link_adapter: String,
     error: Option<String>,
+    settings: Settings,
+    saved: Settings,
+    settings_path: Option<PathBuf>,
+    devices: Vec<String>,
+    music_path: String,
+    /// Settings that only apply after a restart were changed.
+    restart_needed: bool,
+    /// Last line written to the operation log (audio statistics once a minute).
+    last_stats_log: std::time::Instant,
 }
 
 impl App {
     pub fn new(out: Output, opts: Options) -> App {
-        let log = Log::default();
+        let log = opts.log_file.as_deref().map(Log::with_file).unwrap_or_default();
         log.say(format!("Audio: {} ({} Hz, {} Kanäle)", out.device_name, out.sample_rate, out.channels));
         let mut loader = Loader::new(out.sender(), out.sample_rate, log.clone());
         loader.auto_analyze = opts.auto_analyze;
@@ -106,11 +121,18 @@ impl App {
             fx_depth: 0.5,
             sampler_volume: 0.8,
             master_gain: 1.0,
-            zoom_s: 8.0,
+            zoom_s: opts.settings.zoom_s,
             show_settings: false,
             midi_path: opts.midi.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
-            link_adapter: String::new(),
+            link_adapter: opts.settings.djlink_adapter.clone(),
             error: None,
+            settings: opts.settings.clone(),
+            saved: opts.settings.clone(),
+            settings_path: opts.settings_path.clone(),
+            devices: Vec::new(),
+            music_path: opts.music.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+            restart_needed: false,
+            last_stats_log: std::time::Instant::now(),
         };
         for (d, s) in opts.load.iter().take(DECKS).enumerate() {
             app.loader.load(d, s);
@@ -151,9 +173,10 @@ impl App {
             Ok(h) => {
                 self.ctl = Some(h);
                 self.error = None;
+                self.settings.midi = Some(mapping);
             }
             Err(e) => {
-                self.log.say(format!("Controller: {e}"));
+                self.log.error(format!("Controller: {e}"));
                 self.error = Some(e);
             }
         }
@@ -165,10 +188,71 @@ impl App {
             Ok(h) => {
                 self.link = Some(h);
                 self.error = None;
+                self.settings.djlink = true;
+                self.settings.djlink_adapter = self.link_adapter.trim().to_string();
             }
             Err(e) => {
-                self.log.say(format!("DJ Link: {e}"));
+                self.log.error(format!("DJ Link: {e}"));
                 self.error = Some(e);
+            }
+        }
+    }
+
+    /// Start `rbx-selftest` (next to this program) in its own console window; the report opens in the
+    /// browser when it is done.
+    fn run_selftest(&mut self, extra: &[&str]) {
+        let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("rbx-selftest.exe")));
+        let Some(exe) = exe.filter(|p| p.is_file()) else {
+            self.log.error("rbx-selftest.exe nicht gefunden (liegt es neben rbx-ui.exe?)");
+            return;
+        };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(extra).args(["--open", "--pause"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_CONSOLE: u32 = 0x10;
+            cmd.creation_flags(CREATE_NEW_CONSOLE);
+        }
+        match cmd.spawn() {
+            Ok(_) => self.log.say("Selbsttest gestartet (eigenes Fenster)"),
+            Err(e) => self.log.error(format!("Selbsttest: {e}")),
+        }
+    }
+
+    /// Once a minute: audio statistics and deck states into the log (for reports after testing).
+    fn log_stats(&mut self, s: &MixerState) {
+        if self.last_stats_log.elapsed() < Duration::from_secs(60) {
+            return;
+        }
+        self.last_stats_log = std::time::Instant::now();
+        let st = self.out.stats();
+        let decks: Vec<String> = (0..DECKS)
+            .map(|d| {
+                let ds = s.decks[d];
+                format!("D{} {} {}", d + 1, if ds.playing { "spielt" } else { "steht" }, ds.bpm.map_or("-".into(), |b| format!("{b:.2}")))
+            })
+            .collect();
+        self.log.say(format!(
+            "Betrieb: Last {:.1} % (max {:.1} %), Überlastungen {}, Aussetzer {}, Puffer {}; {}",
+            st.load * 100.0,
+            st.max_load * 100.0,
+            st.overloads,
+            st.late,
+            st.frames,
+            decks.join(", ")
+        ));
+    }
+
+    /// Save the settings if they changed.
+    fn persist(&mut self) {
+        self.settings.zoom_s = self.zoom_s;
+        if self.settings != self.saved {
+            if let Some(p) = &self.settings_path {
+                match self.settings.save(p) {
+                    Ok(()) => self.saved = self.settings.clone(),
+                    Err(e) => self.log.say(format!("Einstellungen nicht gespeichert: {e}")),
+                }
             }
         }
     }
@@ -197,6 +281,17 @@ impl App {
             ui.label(RichText::new("rekordbox-rs").strong().size(16.0).color(ACCENT));
             ui.separator();
             ui.label(format!("Audio: {}", self.out.device_name));
+            let st = self.out.stats();
+            let col = if st.overloads + st.late > 0 { Color32::from_rgb(255, 120, 80) } else { Color32::GRAY };
+            ui.label(RichText::new(format!("Last {:.0} %", st.load * 100.0)).color(col)).on_hover_text(format!(
+                "Audio-Rechenzeit je Puffer; max {:.0} %, Überlastungen {}, Aussetzer {}",
+                st.max_load * 100.0,
+                st.overloads,
+                st.late
+            ));
+            if st.overloads + st.late > 0 {
+                ui.label(RichText::new(format!("{} Aussetzer", st.overloads + st.late)).color(col));
+            }
             ui.separator();
             ui.label("Master");
             widgets::meter(ui, s.peak, 90.0);
@@ -222,7 +317,14 @@ impl App {
                 let n = l.link.lock().unwrap().state().devices.len();
                 ui.label(RichText::new(format!("DJ Link ({n} Geräte)")).color(Color32::LIGHT_GREEN));
             }
+            if let Some(e) = self.log.last_error(Duration::from_secs(15)) {
+                ui.separator();
+                ui.label(RichText::new(e).color(Color32::from_rgb(255, 90, 90)).strong());
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Tasten").on_hover_text(SHORTCUTS).clicked() {
+                    self.log.say(SHORTCUTS.replace('\n', "; "));
+                }
                 if ui.button("Einstellungen").clicked() {
                     self.show_settings = !self.show_settings;
                 }
@@ -233,8 +335,80 @@ impl App {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
-        egui::Window::new("Einstellungen").open(&mut open).default_width(420.0).show(ctx, |ui| {
-            ui.checkbox(&mut self.loader.auto_analyze, "Tracks ohne Analyse beim Laden analysieren");
+        if self.devices.is_empty() {
+            self.devices = rbx_engine::output::list_devices();
+        }
+        egui::Window::new("Einstellungen").open(&mut open).default_width(460.0).show(ctx, |ui| {
+            ui.label(RichText::new("Audio").strong());
+            let st = self.out.stats();
+            ui.label(format!(
+                "Aktiv: {} - {} Hz, {} Kanäle, Puffer {} Frames ({:.1} ms)",
+                self.out.device_name,
+                self.out.sample_rate,
+                self.out.channels,
+                st.frames,
+                f64::from(st.frames) / f64::from(self.out.sample_rate.max(1)) * 1000.0
+            ));
+            ui.label(format!(
+                "Last {:.0} % (max {:.0} %), Überlastungen {}, Aussetzer {}",
+                st.load * 100.0,
+                st.max_load * 100.0,
+                st.overloads,
+                st.late
+            ));
+            ui.horizontal(|ui| {
+                ui.label("Gerät");
+                let current = self.settings.device.clone().unwrap_or_else(|| "Systemstandard".into());
+                egui::ComboBox::from_id_salt("device").width(300.0).selected_text(current).show_ui(ui, |ui| {
+                    if ui.selectable_label(self.settings.device.is_none(), "Systemstandard").clicked() {
+                        self.settings.device = None;
+                        self.restart_needed = true;
+                    }
+                    for d in self.devices.clone() {
+                        if ui.selectable_label(self.settings.device.as_deref() == Some(d.as_str()), &d).clicked() {
+                            self.settings.device = Some(d);
+                            self.restart_needed = true;
+                        }
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Puffer");
+                let text = self.settings.buffer.map_or("Standard".to_string(), |b| format!("{b} Frames"));
+                egui::ComboBox::from_id_salt("buffer").selected_text(text).show_ui(ui, |ui| {
+                    for b in [None, Some(128), Some(256), Some(512), Some(1024), Some(2048)] {
+                        let t = b.map_or("Standard".to_string(), |b| format!("{b} Frames"));
+                        if ui.selectable_label(self.settings.buffer == b, t).clicked() {
+                            self.settings.buffer = b;
+                            self.restart_needed = true;
+                        }
+                    }
+                });
+                ui.label(RichText::new("kleiner = weniger Verzögerung, größer = weniger Aussetzer").small().weak());
+            });
+            if self.restart_needed {
+                ui.horizontal(|ui| {
+                    ui.colored_label(Color32::YELLOW, "Wird nach einem Neustart übernommen.");
+                    if ui.button("Jetzt neu starten").clicked() {
+                        self.persist();
+                        restart(ctx);
+                    }
+                });
+            }
+            ui.separator();
+            ui.label(RichText::new("Bibliothek").strong());
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.music_path).desired_width(300.0).hint_text("Musik-Ordner (leer = Eigene Musik)"));
+                if ui.button("Einlesen").clicked() {
+                    let m = self.music_path.trim().trim_matches('"');
+                    let music = (!m.is_empty()).then(|| PathBuf::from(m));
+                    self.settings.music = music.clone();
+                    self.loader.start_library(self.settings.anlz.clone(), music);
+                }
+            });
+            if ui.checkbox(&mut self.loader.auto_analyze, "Tracks ohne Analyse beim Laden analysieren").changed() {
+                self.settings.auto_analyze = self.loader.auto_analyze;
+            }
             ui.separator();
             ui.label(RichText::new("Controller (MIDI-Mapping, z. B. XDJ-RX3.midi.csv)").strong());
             ui.horizontal(|ui| {
@@ -271,6 +445,29 @@ impl App {
                         l.follow.lock().unwrap()[d] = f.then_some(None);
                     }
                 }
+            }
+            ui.separator();
+            ui.label(RichText::new("Selbsttest").strong());
+            ui.label(
+                RichText::new(
+                    "Prüft automatisch Audio-Qualität (offline), Soundkarte (nur Stille), Leistung, Dauerlauf, \
+                     Bibliothek und Analyse, MIDI und DJ Link. Ergebnis als Bericht im Browser.",
+                )
+                .small(),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Schnelltest (~30 s)").clicked() {
+                    self.run_selftest(&["--quick"]);
+                }
+                if ui.button("Vollständig (~3 min)").clicked() {
+                    self.run_selftest(&[]);
+                }
+                if ui.button("mit Controller-Eingaben (20 s)").on_hover_text("Während des Tests Regler und Tasten am Controller bewegen").clicked() {
+                    self.run_selftest(&["--quick", "--midi-listen", "20"]);
+                }
+            });
+            if let Some(dir) = rbx_engine::session::data_dir() {
+                ui.label(RichText::new(format!("Logdateien und Berichte: {}", dir.display())).small().weak());
             }
             if let Some(e) = &self.error {
                 ui.colored_label(Color32::LIGHT_RED, e);
@@ -763,6 +960,60 @@ impl App {
         self.loader.add_files(&files);
     }
 
+    /// Keyboard shortcuts (not while typing in a text field), see [`SHORTCUTS`].
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let events: Vec<(egui::Key, bool, egui::Modifiers)> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key { key, pressed, repeat: false, modifiers, .. } => Some((*key, *pressed, *modifiers)),
+                    _ => None,
+                })
+                .collect()
+        });
+        let s = self.state();
+        use egui::Key;
+        for (key, pressed, m) in events {
+            let hot = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8];
+            if let Some(i) = hot.iter().position(|&k| k == key) {
+                let d = usize::from(m.shift);
+                self.send(if pressed { Command::HotCuePress(d, i) } else { Command::HotCueRelease(d, i) });
+                continue;
+            }
+            match (key, pressed) {
+                (Key::Z, true) => self.send(Command::CuePress(0)),
+                (Key::Z, false) => self.send(Command::CueRelease(0)),
+                (Key::X, true) => self.send(Command::TogglePlay(0)),
+                (Key::C, true) => self.send(Command::Sync(0)),
+                (Key::B, true) => self.send(Command::CuePress(1)),
+                (Key::B, false) => self.send(Command::CueRelease(1)),
+                (Key::N, true) => self.send(Command::TogglePlay(1)),
+                (Key::M, true) => self.send(Command::Sync(1)),
+                (Key::ArrowLeft, true) => self.send(Command::Crossfader((s.crossfader - 0.1).max(-1.0))),
+                (Key::ArrowRight, true) => self.send(Command::Crossfader((s.crossfader + 0.1).min(1.0))),
+                (Key::ArrowUp | Key::ArrowDown, true) => {
+                    let pos = self.selected.and_then(|i| self.filtered.iter().position(|&f| f == i));
+                    let next = match (key, pos) {
+                        (Key::ArrowUp, Some(p)) => p.saturating_sub(1),
+                        (Key::ArrowDown, Some(p)) => (p + 1).min(self.filtered.len().saturating_sub(1)),
+                        _ => 0,
+                    };
+                    self.selected = self.filtered.get(next).copied();
+                }
+                (Key::Enter, true) => {
+                    if let Some(r) = self.selected.and_then(|i| self.rows.get(i)) {
+                        let p = r.path.to_string_lossy().into_owned();
+                        self.load(usize::from(m.shift), &p);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn side_effects(&self) {
         if let Some(c) = &self.ctl {
             rbx_engine::session::side_effects(&c.controller, &self.loader);
@@ -774,8 +1025,10 @@ impl App {
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(16));
         self.handle_drops(&ctx);
+        self.shortcuts(&ctx);
         self.side_effects();
         let s = self.state();
+        self.log_stats(&s);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui, &s));
         egui::Panel::bottom("log").show(ui, |ui| self.log_panel(ui));
         egui::Panel::bottom("library").resizable(true).default_size(280.0).min_size(120.0).show(ui, |ui| self.library_panel(ui));
@@ -823,6 +1076,7 @@ impl App {
         if self.show_settings {
             self.settings_window(&ctx);
         }
+        self.persist();
     }
 }
 
@@ -830,6 +1084,19 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
+}
+
+/// Keyboard shortcuts (also shown by the "Tasten" button).
+pub const SHORTCUTS: &str = "Deck 1: Z = CUE (halten), X = PLAY/PAUSE, C = SYNC, 1-8 = Hot Cues A-H\n\
+Deck 2: B = CUE (halten), N = PLAY/PAUSE, M = SYNC, Umschalt+1-8 = Hot Cues A-H\n\
+Pfeil links/rechts = Crossfader, Pfeil hoch/runter = Track wählen, Enter = in Deck 1 laden (Umschalt: Deck 2)";
+
+/// Start the program again with the same arguments and close this window.
+fn restart(ctx: &egui::Context) {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).args(std::env::args().skip(1)).spawn();
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 }
 
 /// `m:ss.t`

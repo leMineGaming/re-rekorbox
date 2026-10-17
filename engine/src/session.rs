@@ -25,17 +25,47 @@ use crate::pcm::{decode_file, Pcm};
 
 pub type Shared<T> = Arc<Mutex<T>>;
 
-/// Recent messages (newest last), also printed to stdout.
+/// Recent messages (newest last), also printed to stdout and, with [`Log::with_file`], appended to a
+/// log file with a time stamp.
 #[derive(Clone, Default)]
-pub struct Log(Shared<VecDeque<String>>);
+pub struct Log {
+    recent: Shared<VecDeque<String>>,
+    file: Option<Shared<std::fs::File>>,
+    last_error: Shared<Option<(std::time::Instant, String)>>,
+}
 
 impl Log {
     const KEEP: usize = 200;
 
+    /// A log that also appends to `path` (created if needed).
+    pub fn with_file(path: &Path) -> Log {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(|f| Arc::new(Mutex::new(f)));
+        Log { recent: Default::default(), file, last_error: Default::default() }
+    }
+
+    /// A message that the user should see (e.g. shown highlighted for a while).
+    pub fn error(&self, msg: impl Into<String>) {
+        let msg = msg.into();
+        *self.last_error.lock().unwrap() = Some((std::time::Instant::now(), msg.clone()));
+        self.say(format!("FEHLER: {msg}"));
+    }
+
+    /// The last error if it is younger than `max_age`.
+    pub fn last_error(&self, max_age: Duration) -> Option<String> {
+        self.last_error.lock().unwrap().as_ref().filter(|(t, _)| t.elapsed() < max_age).map(|(_, m)| m.clone())
+    }
+
     pub fn say(&self, msg: impl Into<String>) {
         let msg = msg.into();
         println!("{msg}");
-        let mut q = self.0.lock().unwrap();
+        if let Some(f) = &self.file {
+            use std::io::Write;
+            let _ = writeln!(f.lock().unwrap(), "{} {msg}", timestamp());
+        }
+        let mut q = self.recent.lock().unwrap();
         if q.len() >= Self::KEEP {
             q.pop_front();
         }
@@ -44,9 +74,49 @@ impl Log {
 
     /// The last `n` messages, oldest first.
     pub fn recent(&self, n: usize) -> Vec<String> {
-        let q = self.0.lock().unwrap();
+        let q = self.recent.lock().unwrap();
         q.iter().skip(q.len().saturating_sub(n)).cloned().collect()
     }
+}
+
+/// Folder for settings, logs and own analyses: `%APPDATA%/rekordbox-rs`.
+pub fn data_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("rekordbox-rs"))
+}
+
+/// UTC time `YYYY-MM-DD hh:mm:ss`.
+pub fn timestamp() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // civil date from days since 1970-01-01 (H. Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", rem / 3600, rem / 60 % 60, rem % 60)
+}
+
+/// Write panics (message, location, backtrace) to `<data_dir>/logs/crash-<program>.txt` in addition to
+/// the default output, so a crash during testing leaves something to send.
+pub fn install_crash_handler(program: &'static str) {
+    let Some(dir) = data_dir().map(|d| d.join("logs")) else { return };
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::fs::create_dir_all(&dir);
+        let bt = std::backtrace::Backtrace::force_capture();
+        let text = format!("{} {program} {}\n{info}\n\n{bt}\n", timestamp(), env!("CARGO_PKG_VERSION"));
+        let path = dir.join(format!("crash-{program}.txt"));
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = f.write_all(text.as_bytes());
+        }
+        default(info);
+    }));
 }
 
 /// Load a source: file, `tone` (440 Hz) or `click:BPM` (click track with grid).
@@ -381,7 +451,7 @@ impl Loader {
         let dir = match crate::analyze::write_anlz(&r, &root) {
             Ok(d) => d,
             Err(e) => {
-                self.log.say(format!("analysis not saved: {e}"));
+                self.log.error(format!("analysis not saved: {e}"));
                 self.set_busy(deck, None);
                 return;
             }
@@ -418,7 +488,7 @@ impl Loader {
                 }
             }
             Err(e) => {
-                me.log.say(e);
+                me.log.error(e);
                 me.set_busy(deck, None);
             }
         });

@@ -18,6 +18,10 @@ pub const HOT_CUES: usize = 8;
 pub const TEMPO_RANGES: [f64; 4] = [0.06, 0.10, 0.16, 1.0];
 /// Length of the fade applied when playback starts or stops (avoids clicks).
 const DECLICK_S: f64 = 0.004;
+/// Crossfade at position jumps (loop wrap, beat jump, hot cue, seek) in seconds.
+const JUMP_XFADE_S: f64 = 0.004;
+/// Fade between the plain and the pitch-shifted signal when key lock / key shift switches.
+const SHIFT_FADE_S: f64 = 0.02;
 /// One full jog revolution corresponds to this much audio while scratching (33⅓ rpm).
 const SECONDS_PER_REV: f64 = 1.8;
 
@@ -227,6 +231,13 @@ pub struct Deck {
     memory: Vec<f64>,
     auto_cue: bool,
     keyboard_preview: bool,
+    /// Where playback would have continued without the last jump (NaN = no reference), the old
+    /// position being faded out and the frames left of that fade.
+    expected: f64,
+    xf_from: f64,
+    xf_left: u32,
+    /// Share of the pitch-shifted signal (0..1).
+    shift_mix: f32,
 }
 
 impl Default for Deck {
@@ -268,6 +279,10 @@ impl Default for Deck {
             memory: Vec::new(),
             auto_cue: false,
             keyboard_preview: false,
+            expected: f64::NAN,
+            xf_from: 0.0,
+            xf_left: 0,
+            shift_mix: 0.0,
         }
     }
 }
@@ -301,6 +316,8 @@ impl Deck {
         self.pos = 0.0;
         self.playing = false;
         self.ramp = 0.0;
+        self.expected = f64::NAN;
+        self.xf_left = 0;
         self.cue = 0.0;
         self.hot_cues = [None; HOT_CUES];
         self.lp = None;
@@ -342,6 +359,11 @@ impl Deck {
             self.playing = true;
             self.motor = 1.0;
         }
+    }
+
+    /// The loaded audio.
+    pub fn pcm_arc(&self) -> Option<Arc<Pcm>> {
+        self.pcm.clone()
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -862,7 +884,14 @@ impl Deck {
         // bend decays to zero within ~0.2 s
         let bend_decay = (-1.0 / (0.05 * f64::from(out_rate))).exp();
         let motor_step = if self.brake_s > 0.0 { 1.0 / (self.brake_s * f64::from(out_rate)) } else { 1.0 };
+        let xf_len = ((JUMP_XFADE_S * f64::from(out_rate)) as u32).max(1);
+        let shift_step = (1.0 / (SHIFT_FADE_S * f64::from(out_rate))) as f32;
         for o in out.iter_mut() {
+            // a jump since the last frame (loop wrap, beat jump, hot cue, seek): fade the old place out
+            if self.expected.is_finite() && !self.touched && (self.pos - self.expected).abs() > 2.0 {
+                self.xf_from = self.expected;
+                self.xf_left = xf_len;
+            }
             // motor: vinyl start/brake ramp
             let motor_target = if self.playing && !self.stopping { 1.0 } else { 0.0 };
             if self.motor < motor_target {
@@ -899,16 +928,29 @@ impl Deck {
                 pitch /= speed.abs() as f32;
             }
             let shifting = (pitch - 1.0).abs() > 1e-3;
-            if self.ramp > 0.0 || shifting {
+            self.shift_mix = if shifting { (self.shift_mix + shift_step).min(1.0) } else { (self.shift_mix - shift_step).max(0.0) };
+            if self.ramp > 0.0 || self.shift_mix > 0.0 {
                 let mut f = pcm.sample(self.pos);
-                if shifting {
-                    f = self.shifter.process(f, pitch);
+                if self.xf_left > 0 {
+                    let w = self.xf_left as f32 / xf_len as f32;
+                    let old = pcm.sample(self.xf_from.clamp(0.0, (len - 1.0).max(0.0)));
+                    f = [f[0] * (1.0 - w) + old[0] * w, f[1] * (1.0 - w) + old[1] * w];
+                    self.xf_from += speed * ratio;
+                    self.xf_left -= 1;
+                }
+                if self.shift_mix > 0.0 {
+                    let wet = self.shifter.process(f, pitch);
+                    let m = self.shift_mix;
+                    f = [f[0] * (1.0 - m) + wet[0] * m, f[1] * (1.0 - m) + wet[1] * m];
+                } else {
+                    self.shifter.feed(f);
                 }
                 let g = gain * self.ramp;
                 o[0] += f[0] * g;
                 o[1] += f[1] * g;
             }
             self.pos += speed * ratio;
+            let continued = self.pos;
             if let Some(l) = self.lp {
                 let span = (l.end - l.start).max(1.0);
                 if l.active && speed > 0.0 && self.pos >= l.end {
@@ -942,6 +984,8 @@ impl Deck {
             if !self.touched {
                 self.bend *= bend_decay;
             }
+            // reference for jump detection; none while silent (nothing to fade)
+            self.expected = if self.ramp > 0.0 { continued } else { f64::NAN };
         }
     }
 }

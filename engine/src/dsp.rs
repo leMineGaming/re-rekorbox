@@ -371,6 +371,11 @@ impl ColorProcessor {
         let dev = k - 0.5; // −0.5 .. 0.5
         let amount = (dev.abs() * 2.0).min(1.0);
         if amount < 0.01 && !matches!(fx, ColorFx::Space | ColorFx::DubEcho) {
+            if fx == ColorFx::Filter {
+                // keep the filter running (open) so that turning the knob starts without a jump
+                self.filter.set(Shape::LowPass, self.fs, 20000.0, 0.7);
+                self.filter.process(x);
+            }
             return x;
         }
         let q = 0.7 + sub * 6.0;
@@ -381,7 +386,10 @@ impl ColorProcessor {
                 } else {
                     self.filter.set(Shape::HighPass, self.fs, Self::sweep(20.0, 8000.0, amount), q);
                 }
-                self.filter.process(x)
+                // fade in from dry over the first few percent of the knob travel
+                let y = self.filter.process(x);
+                let mix = (amount / 0.05).min(1.0);
+                [x[0] + (y[0] - x[0]) * mix, x[1] + (y[1] - x[1]) * mix]
             }
             ColorFx::Space => {
                 self.reverb.feedback = 0.75 + 0.22 * sub;
@@ -472,6 +480,12 @@ impl PitchShifter {
     pub fn new(sample_rate: u32) -> PitchShifter {
         let window = sample_rate as f32 * 0.06;
         PitchShifter { line: DelayLine::new(window as usize * 3), window, phase: 0.0 }
+    }
+
+    /// Keep the delay line filled while the shifter is not in use, so that switching it on reads
+    /// recent audio instead of old data or silence.
+    pub fn feed(&mut self, x: Frame) {
+        self.line.write(x);
     }
 
     pub fn process(&mut self, x: Frame, ratio: f32) -> Frame {

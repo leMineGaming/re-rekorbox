@@ -11,5 +11,6 @@ pub mod controller;
 pub mod mixer;
 pub mod output;
 pub mod pcm;
+pub mod quality;
 pub mod sampler;
 pub mod session;

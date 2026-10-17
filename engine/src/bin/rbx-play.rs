@@ -37,6 +37,7 @@ use rbx_engine::pcm::{write_wav, Pcm};
 use rbx_engine::session::{fill_sampler, load_mapping, side_effects, source, start_controller, start_link, Loader, Log};
 
 fn main() -> ExitCode {
+    rbx_engine::session::install_crash_handler("rbx-play");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     let r = match a.as_slice() {

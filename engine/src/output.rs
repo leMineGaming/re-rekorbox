@@ -16,8 +16,65 @@ use cpal::{FromSample, SizedSample};
 use crate::mixer::{Command, Mixer, MixerState};
 use crate::pcm::Frame;
 
+/// Timing of the audio callback, for a load display and dropout detection.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AudioStats {
+    pub callbacks: u64,
+    /// Frames of the last callback.
+    pub frames: u32,
+    /// Render time / buffer duration (smoothed); above 1.0 the mixer is too slow.
+    pub load: f32,
+    /// Highest single-callback load.
+    pub max_load: f32,
+    /// Callbacks that took longer than their buffer duration (audible dropout likely).
+    pub overloads: u64,
+    /// Gaps between callbacks longer than 2× the buffer duration (the device or system stalled).
+    pub late: u64,
+}
+
+/// Measures the callback; shared between the audio thread and readers.
+#[derive(Clone, Default)]
+struct StatsMeter {
+    shared: Arc<Mutex<AudioStats>>,
+    local: AudioStats,
+    last_start: Option<std::time::Instant>,
+}
+
+impl StatsMeter {
+    fn start(&mut self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
+    fn end(&mut self, start: std::time::Instant, frames: usize, sample_rate: u32) {
+        let buf_s = frames as f64 / f64::from(sample_rate.max(1));
+        let work = start.elapsed().as_secs_f64();
+        let load = if buf_s > 0.0 { (work / buf_s) as f32 } else { 0.0 };
+        let s = &mut self.local;
+        s.callbacks += 1;
+        s.frames = frames as u32;
+        s.load = if s.callbacks == 1 { load } else { s.load * 0.95 + load * 0.05 };
+        // the first callbacks include start-up work
+        if s.callbacks > 20 {
+            s.max_load = s.max_load.max(load);
+            if load > 1.0 {
+                s.overloads += 1;
+            }
+            if let Some(prev) = self.last_start {
+                if start.duration_since(prev).as_secs_f64() > 2.0 * buf_s + 0.005 {
+                    s.late += 1;
+                }
+            }
+        }
+        self.last_start = Some(start);
+        if let Ok(mut g) = self.shared.try_lock() {
+            *g = *s;
+        }
+    }
+}
+
 pub struct Output {
     _stream: Option<cpal::Stream>,
+    stats: Arc<Mutex<AudioStats>>,
     /// Stops the silent render thread when dropped.
     stop: Option<Arc<AtomicBool>>,
     commands: Sender<Command>,
@@ -36,6 +93,11 @@ pub fn list_devices() -> Vec<String> {
 impl Output {
     /// Open the default output device (or the first one whose name contains `name`) and start.
     pub fn open(name: Option<&str>) -> Result<Output, String> {
+        Output::open_with(name, None)
+    }
+
+    /// Like [`Output::open`] with a fixed buffer size in frames (`None` = device default).
+    pub fn open_with(name: Option<&str>, buffer_frames: Option<u32>) -> Result<Output, String> {
         let host = cpal::default_host();
         let device = match name {
             None => host.default_output_device().ok_or("no default output device")?,
@@ -48,14 +110,20 @@ impl Output {
         let device_name = device.name().unwrap_or_else(|_| "?".into());
         let supported = device.default_output_config().map_err(|e| e.to_string())?;
         let format = supported.sample_format();
-        let config: cpal::StreamConfig = supported.into();
+        let mut config: cpal::StreamConfig = supported.into();
+        if let Some(n) = buffer_frames {
+            config.buffer_size = cpal::BufferSize::Fixed(n);
+        }
         let sample_rate = config.sample_rate.0;
         let channels = config.channels;
         let (tx, rx) = channel::<Command>();
         let state = Arc::new(Mutex::new(MixerState::default()));
         let mut mixer = Mixer::new(sample_rate);
         let shared = state.clone();
+        let mut meter = StatsMeter::default();
+        let stats = meter.shared.clone();
         let fill = move |buf: &mut [Frame], cue: &mut [Frame]| {
+            let t = meter.start();
             for cmd in rx.try_iter() {
                 mixer.apply(cmd);
             }
@@ -63,6 +131,7 @@ impl Output {
             if let Ok(mut s) = shared.try_lock() {
                 *s = mixer.state();
             }
+            meter.end(t, buf.len(), sample_rate);
         };
         let err = |e| eprintln!("audio stream error: {e}");
         let stream = match format {
@@ -73,7 +142,7 @@ impl Output {
             other => return Err(format!("unsupported sample format {other:?}")),
         }?;
         stream.play().map_err(|e| e.to_string())?;
-        Ok(Output { _stream: Some(stream), stop: None, commands: tx, state, sample_rate, channels, device_name })
+        Ok(Output { _stream: Some(stream), stats, stop: None, commands: tx, state, sample_rate, channels, device_name })
     }
 
     /// The mixer in real time on a background thread, output discarded.
@@ -82,6 +151,8 @@ impl Output {
         let state = Arc::new(Mutex::new(MixerState::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let (shared, halt) = (state.clone(), stop.clone());
+        let mut meter = StatsMeter::default();
+        let stats = meter.shared.clone();
         std::thread::spawn(move || {
             let mut mixer = Mixer::new(sample_rate);
             let block = (sample_rate / 100).max(1) as usize;
@@ -95,7 +166,9 @@ impl Output {
                 // keep pace with the clock
                 let due = (start.elapsed().as_secs_f64() * f64::from(sample_rate)) as u64;
                 while rendered < due {
+                    let t = meter.start();
                     mixer.render_with_cue(&mut buf, &mut cue);
+                    meter.end(t, block, sample_rate);
                     rendered += block as u64;
                 }
                 if let Ok(mut s) = shared.try_lock() {
@@ -104,7 +177,7 @@ impl Output {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         });
-        Output { _stream: None, stop: Some(stop), commands: tx, state, sample_rate, channels: 2, device_name: "(silent)".into() }
+        Output { _stream: None, stats, stop: Some(stop), commands: tx, state, sample_rate, channels: 2, device_name: "(silent)".into() }
     }
 
     pub fn send(&self, cmd: Command) {
@@ -123,6 +196,16 @@ impl Output {
 
     pub fn state(&self) -> MixerState {
         *self.state.lock().unwrap()
+    }
+
+    /// Callback timing (load, overloads, stalls).
+    pub fn stats(&self) -> AudioStats {
+        *self.stats.lock().unwrap()
+    }
+
+    /// True when no sound device is used.
+    pub fn is_silent(&self) -> bool {
+        self._stream.is_none()
     }
 }
 

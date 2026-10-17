@@ -18,3 +18,7 @@ path = "src/bin/rbx-play.rs"
 [[bin]]
 name = "rbx-analyze"
 path = "src/bin/rbx-analyze.rs"
+
+[[bin]]
+name = "rbx-selftest"
+path = "src/bin/rbx-selftest.rs"

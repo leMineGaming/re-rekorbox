@@ -527,9 +527,9 @@ impl Mixer {
             let mut peak = 0.0f32;
             for (k, (o, b)) in out.iter_mut().zip(&buf).enumerate() {
                 let mut x = [b[0] * trim, b[1] * trim];
-                if !ch.eq.is_flat() {
-                    x = ch.eq.process(x);
-                }
+                // always through the EQ: bypassing it when flat would switch its phase shift on and
+                // off (audible click when a kill is released)
+                x = ch.eq.process(x);
                 x = ch.color.process(self.color_fx, ch.color_knob, self.color_sub, x);
                 if ch.pad_fx.active() {
                     x = ch.pad_fx.process(x, deck_bpm[i]);

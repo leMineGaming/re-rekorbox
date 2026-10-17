@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
+use eframe::egui;
 use rbx_engine::output::Output;
 use rbx_engine::pcm::{write_wav, Pcm};
 use rbx_ui::app::{App, Options};
@@ -160,5 +161,50 @@ fn real_library_screenshot() {
     }
     shot(&mut h, "real-library");
     drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keyboard_plays_and_cues() {
+    let dir = temp("keys");
+    let mut h = harness(app_with_tracks(&dir));
+    assert!(wait(&mut h, 5.0, |a| a.rows().len() == 2));
+    let p = h.state().rows()[1].path.to_string_lossy().into_owned();
+    h.state_mut().load(0, &p);
+    assert!(wait(&mut h, 30.0, |a| a.state().decks[0].loaded && a.loader.deck(0).busy.is_none()));
+    h.key_press(egui::Key::X);
+    assert!(wait(&mut h, 3.0, |a| a.state().decks[0].playing), "X = play deck 1");
+    h.key_press(egui::Key::Num1);
+    assert!(wait(&mut h, 2.0, |a| a.state().decks[0].hot_cues[0]), "1 = hot cue A");
+    h.key_press(egui::Key::X);
+    assert!(wait(&mut h, 2.0, |a| !a.state().decks[0].playing), "X again = pause");
+    h.key_press(egui::Key::ArrowRight);
+    assert!(wait(&mut h, 2.0, |a| a.state().crossfader > 0.05), "arrow right moves the crossfader");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn settings_round_trip() {
+    use rbx_ui::settings::Settings;
+    let s = Settings {
+        device: Some("Lautsprecher (Realtek)".into()),
+        buffer: Some(256),
+        music: Some(PathBuf::from(r"D:\Musik")),
+        midi: Some(PathBuf::from(r"C:\m\XDJ-RX3.midi.csv")),
+        djlink: true,
+        djlink_adapter: "Ethernet".into(),
+        auto_analyze: false,
+        zoom_s: 12.0,
+        ..Default::default()
+    };
+    assert_eq!(Settings::parse(&s.to_text()), s);
+    // unknown keys and bad values are ignored
+    let p = Settings::parse("buffer=5\nzoom_s=abc\nfoo=bar\ndevice=\n");
+    assert_eq!(p, Settings::default());
+    let dir = temp("settings");
+    let f = dir.join("sub").join("settings.txt");
+    s.save(&f).unwrap();
+    assert_eq!(Settings::load(&f), s);
     let _ = std::fs::remove_dir_all(&dir);
 }
