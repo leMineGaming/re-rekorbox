@@ -43,7 +43,10 @@ impl Drop for Fixture {
 }
 
 fn fixture() -> Fixture {
-    let root = std::env::temp_dir().join(format!("rbx-library-{}", std::process::id()));
+    // one folder per call: tests run in parallel in one process
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("rbx-library-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let anlz = root.join("USBANLZ");
     // track A: constant 128 BPM, first beat is beat 3 of a bar, hot cues A and C, a memory cue and a loop
