@@ -14,3 +14,7 @@ rekordbox-formats = { path = ".." }
 [[bin]]
 name = "rbx-play"
 path = "src/bin/rbx-play.rs"
+
+[[bin]]
+name = "rbx-analyze"
+path = "src/bin/rbx-analyze.rs"

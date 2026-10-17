@@ -72,7 +72,7 @@ pub struct Onsets {
     pub mid: Vec<f32>,
     /// Above 2000 Hz.
     pub high: Vec<f32>,
-    /// Chroma (12 pitch classes, 80–5000 Hz, frame-normalised) per frame.
+    /// Chroma (12 pitch classes, 80–2000 Hz, linear magnitude, frame-normalised) per frame.
     pub chroma: Vec<[f32; 12]>,
 }
 
@@ -101,7 +101,7 @@ pub fn onsets(pcm: &Pcm) -> Onsets {
     let pc: Vec<Option<usize>> = (0..FRAME / 2)
         .map(|b| {
             let f = b as f64 * sr / FRAME as f64;
-            (80.0..5000.0).contains(&f).then(|| ((12.0 * (f / 440.0).log2()).round() as i64 + 9).rem_euclid(12) as usize)
+            (80.0..2000.0).contains(&f).then(|| ((12.0 * (f / 440.0).log2()).round() as i64 + 9).rem_euclid(12) as usize)
         })
         .collect();
     let (mut re, mut im) = (vec![0.0f32; FRAME], vec![0.0f32; FRAME]);
@@ -122,9 +122,10 @@ pub fn onsets(pcm: &Pcm) -> Onsets {
         let (mut flux, mut lflux, mut mflux, mut hflux) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         let mut ch = [0.0f32; 12];
         for b in 1..bins {
-            let mag = (1.0 + 100.0 * (re[b] * re[b] + im[b] * im[b]).sqrt()).ln();
+            let lin = (re[b] * re[b] + im[b] * im[b]).sqrt();
+            let mag = (1.0 + 100.0 * lin).ln();
             if let Some(c) = pc[b] {
-                ch[c] += mag;
+                ch[c] += lin;
             }
             let d = mag - prev[b];
             if d > 0.0 {
@@ -355,7 +356,11 @@ pub struct GridResult {
 
 /// Detect tempo, phase and downbeat of a track.
 pub fn detect_grid(pcm: &Pcm) -> Option<GridResult> {
-    let ons = onsets(pcm);
+    detect_grid_with(pcm, &onsets(pcm))
+}
+
+/// [`detect_grid`] with precomputed onset envelopes.
+pub fn detect_grid_with(pcm: &Pcm, ons: &Onsets) -> Option<GridResult> {
     let (env, low) = (ons.full.clone(), ons.low.clone());
     let duration = pcm.duration_s();
     if duration < 5.0 {
@@ -383,11 +388,13 @@ pub fn detect_grid(pcm: &Pcm) -> Option<GridResult> {
         }
     }
     let (_, mut bpm, mut score) = best?;
-    // prefer the integer tempo when it is nearly as good
+    // prefer the integer tempo when it is nearly as good (compared at a fine phase step, so that
+    // very sharp onsets are not missed)
     let int = bpm.round();
     if (int - bpm).abs() <= 0.25 && (BPM_MIN..=BPM_MAX).contains(&int) {
-        let (si, _) = comb(&env, int, duration, 0.01);
-        if si >= score * 0.985 {
+        let (sb, _) = comb(&env, bpm, duration, 0.002);
+        let (si, _) = comb(&env, int, duration, 0.002);
+        if si >= sb * 0.985 {
             bpm = int;
             score = si;
         }
@@ -406,13 +413,13 @@ pub fn detect_grid(pcm: &Pcm) -> Option<GridResult> {
     // precise phase at 1 ms; then beat or offbeat by the fitted decision
     let beat = 60.0 / bpm;
     let (_, phase) = comb(&env, bpm, duration, 0.001);
-    let f = phase_features(&ons, bpm, phase, duration);
+    let f = phase_features(ons, bpm, phase, duration);
     let keep = f.iter().zip(PHASE_WEIGHTS).map(|(a, b)| a * b).sum::<f64>() > 0.0;
     let phase = if keep { phase } else { phase + beat / 2.0 };
     let phase = (phase - ONSET_OFFSET_S).rem_euclid(beat);
     // downbeat: bar offset with the best fitted score
     let score_k = |k: usize| {
-        downbeat_features(&ons, bpm, phase, duration, k).iter().zip(DOWNBEAT_WEIGHTS).map(|(a, b)| a * b).sum::<f64>()
+        downbeat_features(ons, bpm, phase, duration, k).iter().zip(DOWNBEAT_WEIGHTS).map(|(a, b)| a * b).sum::<f64>()
     };
     let off = (0..4).max_by(|&a, &b| score_k(a).total_cmp(&score_k(b))).unwrap_or(0);
     Some(GridResult { bpm, first_downbeat_s: phase + off as f64 * beat, confidence: score })
