@@ -530,6 +530,48 @@ Benutzervarianten [GH:0x141c0ecf0].
   existiert) → Inferenz: die User-Modi werden aus der Basisdatei über die Benutzervariante abgeleitet.
 - Validierung mit `rbf pad` [OBS]: 37 Modi, 35 Pad-Dateien, 558 Pads, alle Write/Parse-Round-Trips identisch.
 
+## 5h. DeviceSQL-Engine, `.edb`-Dateien und Stand `export.pdb`
+
+### Engine [GH]
+- Eingebettete, statisch gelinkte Datenbank-Engine (Fehlertexte `edb_dyn_Select`, `edb_dyn_SelectMaterialized`,
+  `edb_dyn_Update`, `edb_dyn_Delete`, `edb_dyn_CountRowSet`, `edb_dyn_CriticalSectionOn/Off`, `dsql_get_free_id`,
+  `ext_dsql_get_new_seqno`; Wrapper `db::dsql…` @0x1420b…). Code-Bereich ≈ 0x142660000–0x142690000.
+- API am Beispiel `db::dsqlExistsGenre` [GH:0x1420b5320]: `CriticalSectionOn` (0x1426819b4) → Tabellen-Deskriptor
+  (0x142265670, Tabelle 2 = Genre) → `Select` mit Filter-Rückruf (0x14267fe20) → nächste Zeile (0x14268050c) →
+  Rowset schließen (0x1426801b0) → `CriticalSectionOff` (0x142681a24).
+- Storage-Manager-Optionen (Strings im Engine-Bereich): `SM_DATA_MMAP`, `SM_DATA_PERS`, `SM_INDEX_PERS`, `PAGESZ`,
+  `MAXPAGES`, `NBUFS`, `HDRSZ`, `FILESZ`, `VALIDATE`, `READ_ONLY`, `COMMIT_WRITE_ONLY`, `COMMITOPT`, `PGMGR`, `MULTITAB`.
+  Prüfregeln des Seitenmanagers [GH:0x142678b98]: `PAGESZ` wird auf ein Vielfaches von 8 abgerundet und muss in
+  0x2C…0xFFF0 liegen; `MAXPAGES` ∉ {1, 2, 3}; `NBUFS` = 0 → 64, sonst ≥ 4; `COMMITOPT` ∈ {0, 1}.
+- Dateien: `datafile.edb`, `ExtData.edb`, `LocalData.edb`, `LocalDataExt.edb`, `export.pdb`, `exportExt.pdb`
+  [Pfade GH:0x141f3a330]. Ein separater Dienst (`edb_agent_open` …, Bereich 0x14235…) beantwortet Browse-Anfragen
+  von Playern im Netzwerk direkt aus `master.db`; der Rückruf GH:0x142376290 liefert dabei Texte zu Feld-IDs
+  (1 Dateiname, 3 Titel, 4 Kommentar, 5 StockDate, 6 Genre, 7 Artist, 8 Album, 9 Label, 10 Tonart, 0x0B Farbe,
+  0x0C Playlist, 0x0D History, 0x0E Hot-Cue-Bank, 0x0F Bildpfad, …).
+
+### String-Kodierung [OBS: `.edb`; GH:0x142376290]
+- **Kurz (ASCII):** Kennbyte `((n + 1) << 1) | 1`, danach n Bytes (n ≤ 126). Beispiel `0B 'Pink'`, `09 'Red'`.
+- **Lang (UTF-16LE):** Kennbyte `0x90`, `u16` Gesamtlänge (inkl. 4-Byte-Kopf), 1 Füllbyte, dann die Code-Units.
+- rekordbox umschließt UTF-16-Text mit den Markern **`0xFFFA` … `0xFFFB`** (Code baut Puffer `FFFA + Text + FFFB`).
+- Weitere Kennbytes (z. B. lange ASCII-Strings) wurden nicht beobachtet und sind nicht spezifiziert.
+
+### `.edb`-Container [OBS: `datafile.edb` 2864 B, `ExtData.edb` 3000 B]
+- 0x38 Bytes Kopf (14 × `u32` LE): Wort 3 = **Dateigröße** (beide Dateien); übrige Wörter unbekannt.
+- Ab 0x38: **nullterminierte `u16`-Tabelle** von Zeilen-Offsets, relativ zu **0x14**; jede Zeile reicht bis zur nächsten,
+  die letzte endet genau am Dateiende (beide Dateien).
+- Zeile: `u16` Tabellenkennung (untere 5 Bit 0), `u16` = laufende Zeilennummer × 0x20, dann tabellenspezifische Felder.
+- Beobachtete Tabellen in `datafile.edb`: `0x02A0` (1 Zeile, String „1000“), **`0x0380` Farben** (8 Zeilen: ID in Byte 9,
+  Name als kurzer String bei Byte 12 – Pink, Red, Orange, Yellow, Green, Aqua, Blue, Purple), **`0x04A0` Spalten/Sortierungen**
+  (27 Zeilen: `u16` ID bei 4, `u16` bei 6, langer markierter String bei 8 – DEFAULT, ALPHABET, … REMIXER),
+  `0x04C0` (22 Zeilen à 12 Bytes, Menü-Konfiguration, Felder unbekannt), `0x04E0` (1 Zeile, 1412 Bytes).
+  `ExtData.edb`: `0x05E0` (30), `0x0560` (28), `0x0520` (3) mit Ordnernamen (z. B. „All Samples“, „Capture“).
+- Validierung `rbf edb` [OBS]: beide Dateien vollständig gelesen, in allen 120 Zeilen ein sauber dekodierter String.
+
+### Stand `export.pdb` (U23)
+Engine, API, Storage-Optionen und Zeilen-/String-Kodierung sind belegt (oben). **Nicht** spezifiziert ist das
+Seitenformat der persistenten Datei (Kopfseite, Seitenköpfe, Tabellenliste, Indexstrukturen) – der Seitenmanager ist
+groß und ohne Beispieldatei nicht gegenprüfbar. Benötigt wird ein USB-/Ordner-Export aus rekordbox als Testdatei.
+
 ## 6. Bewusst ausgeschlossen (Begründung)
 
 - **Lizenzierung / Kopierschutz** (`lsapiw64.dll`, `clatc.dll`, Aktivierung, Abo-Prüfung): wird weder analysiert noch nachgebaut oder umgangen.
@@ -557,7 +599,7 @@ Benutzervarianten [GH:0x141c0ecf0].
 | U20 | rekordbox.xml: `TotalTime` = Sekunden geklärt (5e); offen: `DateAdded` = Text aus der DB (Inferenz: Spalte `StockDate`, GH:0x1420cb5a0), Datumsformat und Einheiten von `Size`/`BitRate` | eigener XML-Export als Testdatei |
 | U21 | ~~Location-Umwandlung~~ → **geklärt** (5e: Reader `\`→`/`, Writer unverändert) | – |
 | U22 | ~~Escaping~~ → **geklärt** (5e: Attribute ohne Zeichen < 0x20; Ausgabeformat CRLF, Umbruch 60) | – |
-| U23 | `export.pdb` (DeviceSQL) – noch nicht analysiert; kein Exportmedium vorhanden | USB-Export als Testdaten + Dekompilat |
+| U23 | `export.pdb`: Engine/Strings/Zeilen belegt (5h); offen: Seitenformat der persistenten Datei | USB-/Ordner-Export als Testdatei |
 | U24 | ~~BOM vor `@file`~~ → **geklärt** (5f: Kopfzeile per Teilstring-Suche, BOM bleibt in Feld 0) | – |
 | U25 | MIDI-CSV: Bedeutung der Typ-Codes 1–3, 9–11, 0x15, 0x16 (kein Text bekannt) und Semantik von `Fast`/`RO`/`Priority` | Nutzer der Mapping-Struktur |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |

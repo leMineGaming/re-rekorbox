@@ -23,6 +23,7 @@ fn main() -> ExitCode {
         ["xml-rewrite", i, o] => rewrite_xml(Path::new(i), Path::new(o)),
         ["midi", p] => check_midi(Path::new(p)),
         ["pad", d] => check_pads(Path::new(d)),
+        ["edb", f] => show_edb(Path::new(f)),
         _ => Err(
             "usage: rbf anlz <file> | rbf check <dir> | rbf xml <file> | rbf xml-rewrite <in> <out> | rbf midi <file|dir>"
                 .into(),
@@ -297,6 +298,41 @@ fn check_pads(dir: &Path) -> R {
     } else {
         Err(format!("{} failures", failures.len()))
     }
+}
+
+/// Show the rows of a DeviceSQL `.edb` file grouped by table kind, with any strings found.
+fn show_edb(path: &Path) -> R {
+    use rekordbox_formats::devicesql::{DsqlString, EdbFile};
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let f = EdbFile::parse(&data).map_err(|e| e.to_string())?;
+    println!("header {:x?}", f.header);
+    let mut kinds: BTreeMap<u16, usize> = BTreeMap::new();
+    let mut strings = 0;
+    for (i, r) in f.rows.iter().enumerate() {
+        *kinds.entry(r.kind()).or_default() += 1;
+        let found: Vec<String> = (4..r.data.len())
+            .filter(|&o| matches!(r.data[o], 0x90) || (r.data[o] & 1 == 1 && r.data[o] > 3))
+            .filter_map(|o| DsqlString::decode(&r.data[o..]).ok().map(|(s, n)| (o, s, n)))
+            .filter(|(o, s, n)| {
+                // keep strings that end exactly at the row end or are followed only by padding
+                let end = o + n;
+                let text_ok = s.text().chars().all(|c| !c.is_control());
+                text_ok && !s.text().is_empty() && r.data[end..].iter().all(|&b| b == 0)
+            })
+            .map(|(o, s, _)| format!("@{o}:{:?}", s.text()))
+            .take(1)
+            .collect();
+        strings += found.len();
+        println!(
+            "row {i:2} kind {:#06x} shift {:#06x} len {:4} {}",
+            r.kind(),
+            r.index_shift(),
+            r.data.len(),
+            found.join(" ")
+        );
+    }
+    println!("rows {} kinds {:x?} rows with a trailing string {strings}", f.rows.len(), kinds);
+    Ok(())
 }
 
 fn rewrite_xml(input: &Path, output: &Path) -> R {

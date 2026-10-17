@@ -49,6 +49,7 @@ public class RbQuery extends GhidraScript {
                 case "xrefrange": xrefrange(toAddr(a[2]), toAddr(a[3]), Integer.decode(a[4])); break;
                 case "strrange": strrange(toAddr(a[2]), toAddr(a[3])); break;
                 case "asm": asm(a[2]); break;
+                case "imm": imm(Arrays.copyOfRange(a, 2, a.length)); break;
                 default: out.println("unknown command " + a[1]);
             }
         } finally {
@@ -282,6 +283,34 @@ public class RbQuery extends GhidraScript {
                 fns.add(f == null ? "?" : f.getEntryPoint().toString());
             }
             out.println("S " + d.getAddress() + " \"" + d.getValue() + "\" <- " + String.join(",", fns));
+        }
+    }
+
+    // Functions whose instructions use all of the given scalar constants (hex); prints per-function hit counts.
+    private void imm(String[] values) {
+        long[] want = new long[values.length];
+        for (int i = 0; i < values.length; i++) want[i] = Long.decode(values[i]);
+        Map<String, long[]> hits = new TreeMap<>();
+        InstructionIterator it = currentProgram.getListing().getInstructions(true);
+        while (it.hasNext() && !monitor.isCancelled()) {
+            Instruction ins = it.next();
+            for (int i = 0; i < ins.getNumOperands(); i++) {
+                for (Object o : ins.getOpObjects(i)) {
+                    if (!(o instanceof ghidra.program.model.scalar.Scalar)) continue;
+                    long v = ((ghidra.program.model.scalar.Scalar) o).getUnsignedValue();
+                    for (int k = 0; k < want.length; k++) {
+                        if (v == want[k]) {
+                            String w = where(ins.getAddress());
+                            hits.computeIfAbsent(w, x -> new long[want.length])[k]++;
+                        }
+                    }
+                }
+            }
+        }
+        for (Map.Entry<String, long[]> e : hits.entrySet()) {
+            boolean all = true;
+            for (long c : e.getValue()) all &= c > 0;
+            if (all) out.println("FN " + e.getKey() + " " + Arrays.toString(e.getValue()));
         }
     }
 

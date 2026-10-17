@@ -10,6 +10,7 @@
 //! * [`pad`] – performance pad definitions (`pad/*.pad.csv`).
 
 pub mod anlz;
+pub mod devicesql;
 pub mod midi;
 pub mod pad;
 pub mod xml;

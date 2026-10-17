@@ -16,7 +16,8 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 | `xml` | `rekordbox.xml`: Modell, Writer (Attributreihenfolge, Zahlenformate, Original-Layout), Reader (Toleranz- und Validierungsregeln), Location-URL, Escaping, Beatgrid-Export-Modi 0/1/2 und Import-Expansion, Cue-Nummern, Hot-Cue-Palette | §5e |
 | `midi` | MIDI-Mapping-CSV (`MidiMappings/*.midi.csv`): Loader-Regeln, Optionen, Typ-Codes inkl. Pad-Auflösung je Gerät, Nachrichten je Deck (Hex/Kanal, `Dual`), Writer | §5f |
 | `pad` | Performance-Pad-Dateien (`pad/*.pad.csv`): Zeilenformat, Benutzervarianten, Modusliste | §5g |
-| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `pad` | – |
+| `devicesql` | DeviceSQL-String-Kodierung (kurz ASCII / lang UTF-16 mit Markern) und `.edb`-Container | §5h |
+| `rbf` (CLI) | `anlz`, `check`, `xml`, `xml-rewrite`, `midi`, `pad`, `edb` | – |
 
 ## Bauen und testen
 
@@ -26,8 +27,8 @@ Voraussetzung: Rust (stable, getestet mit 1.99.1).
 cargo test
 ```
 
-51 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
-24 für ANLZ, 14 für rekordbox.xml, 8 für MIDI-Mappings, 5 für Pad-Dateien. Erwartete Bytes und Regeln stammen jeweils aus der SPEC.
+55 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
+24 für ANLZ, 14 für rekordbox.xml, 8 für MIDI-Mappings, 5 für Pad-Dateien, 4 für DeviceSQL.
 
 ## CLI
 
@@ -43,6 +44,7 @@ cargo run --release --bin rbf -- check "%APPDATA%\Pioneer\rekordbox\share\PIONEE
 | `rbf xml-rewrite <ein> <aus>` | rekordbox.xml einlesen und mit dieser Implementierung neu schreiben |
 | `rbf midi <datei\|ordner>` | MIDI-Mappings parsen, Zuordnungen je Deck berechnen, Round-Trip prüfen |
 | `rbf pad <ordner>` | Pad-Ordner prüfen (Version, Modi, alle Pad-Dateien, Round-Trip) |
+| `rbf edb <datei>` | DeviceSQL-`.edb`-Datei lesen, Zeilen nach Tabelle gruppieren, Strings dekodieren |
 
 **Validierung gegen eine echte Bibliothek** (lokal, 2026-10-16; Ausgabe in `analysis/check_report.txt`):
 7307 Dateien (1831 DAT, 1827 EXT, 1826 2EX, 1823 3EX), **0 Fehler** – alle 5484 Container byte-identisch
@@ -68,7 +70,8 @@ Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round
 - Entschlüsselung von `master.db` / `product.db` – kein Schlüssel wird extrahiert oder eingebettet.
 - Cloud-/Account-Dienste und deren Protokolle.
 - Audio-Engine, DSP, UI, ML-Modelle (Beat-/Cue-Erkennung, Stem-Separation).
-- `export.pdb` (Geräte-Datenbank): noch nicht analysiert (SPEC U23).
+- `export.pdb` (Geräte-Datenbank): Engine, Strings und Zeilen sind belegt, das Seitenformat noch nicht – dafür wird ein
+  USB-/Ordner-Export als Testdatei benötigt (SPEC U23).
 
 ## Projektstruktur
 
