@@ -2,6 +2,7 @@
 //! waveforms, mixer, effects, sampler; controller and DJ Link from the settings. Own design.
 
 pub mod app;
+pub mod ctltest;
 pub mod settings;
 pub mod tracks;
 pub mod widgets;

@@ -10,7 +10,7 @@
 //! sizes are not given by the file (beat-loop / beat-jump pad sizes, gain range) they are in
 //! [`ControllerConfig`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::browser::Browser;
@@ -22,6 +22,90 @@ use crate::deck::{HOT_CUES, TEMPO_RANGES};
 use crate::dsp::ColorFx;
 use crate::fx::{BeatFxKind, FxAssign, TapTempo};
 use crate::mixer::{Command, MixerState, DECKS};
+
+/// Built-in mapping for the Pioneer DJ XDJ-RX3 (`engine/mappings/XDJ-RX3.csv`).
+pub const XDJ_RX3_MAPPING: &str = include_str!("../mappings/XDJ-RX3.csv");
+
+/// Mappings that ship with the program.
+pub fn builtin_mappings() -> Vec<MidiMapping> {
+    [XDJ_RX3_MAPPING].iter().map(|t| rekordbox_formats::midi::parse(t)).filter(|m| m.is_valid()).collect()
+}
+
+/// The built-in mapping whose device name occurs in a MIDI port name (e.g. "XDJ-RX3" in
+/// "2- XDJ-RX3").
+pub fn builtin_for_port(port: &str) -> Option<MidiMapping> {
+    let p = port.to_lowercase();
+    builtin_mappings().into_iter().find(|m| p.contains(&m.device.to_lowercase()))
+}
+
+/// Browser operations from the controller when the host shows the browser itself
+/// ([`Controller::set_external_browser`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowseEvent {
+    /// BROWSE turned (steps, positive = down the list).
+    Scroll(i32),
+    /// SHIFT + BROWSE turned: page steps.
+    Page(i32),
+    /// BROWSE pressed.
+    Press,
+    Back,
+    /// LOAD of a deck (0-based).
+    Load(usize),
+    /// TRACK ◀▶ of a deck: next (`true`) or previous track relative to the loaded one.
+    Step(usize, bool),
+    /// TAG TRACK: add or remove the selected track from the tag list.
+    Tag,
+    /// Show / leave the tag list.
+    TagView,
+    /// Tracks related to the selected one.
+    Related,
+}
+
+/// One received message for the MIDI monitor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonitorEntry {
+    pub time_s: f64,
+    pub bytes: Vec<u8>,
+    /// Control functions it triggered (`function@deck`), empty if none.
+    pub functions: Vec<String>,
+    /// Engine commands it produced (short form).
+    pub commands: Vec<String>,
+    /// No mapping entry knows this message.
+    pub unknown: bool,
+}
+
+/// Group of a control function, for the controller test.
+pub fn category(function: &str) -> &'static str {
+    let f = function.split('+').next().unwrap_or(function);
+    if f.starts_with("PAD") || f.starts_with("Parameter") || matches!(f, "HotCue" | "Keyboard" | "BeatLoop" | "KeyShift" | "PadFx1" | "PadFx2" | "BeatJump" | "Sampler") {
+        "Pads"
+    } else if f.starts_with("FX") || f.starts_with("CFX") {
+        "Effekte"
+    } else if matches!(f, "Browse" | "Back" | "Load" | "AddToTagList" | "TrackFilter" | "Forward" | "Zoom" | "Area" | "RelatedTracks") {
+        "Browser"
+    } else if f.starts_with("EQ")
+        || f.starts_with("AuxInput")
+        || matches!(f, "CrossFader" | "ChannelFader" | "Gain" | "AuxTrim" | "HeadphoneCue" | "MasterCue" | "LinkCue" | "CrossFaderCurve3Pos" | "SamplerVolume" | "InputSelect" | "ChannelLevel")
+    {
+        "Mixer"
+    } else {
+        "Deck"
+    }
+}
+
+/// Parse a MIDI log written by [`Controller::start_recording`]: lines `time_s status data1 [data2]`
+/// (hex bytes), `#` comments.
+pub fn parse_midilog(text: &str) -> Vec<MidiMessage> {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            let t: f64 = w.next()?.parse().ok()?;
+            let bytes: Vec<u8> = w.filter_map(|h| u8::from_str_radix(h, 16).ok()).collect();
+            MidiMessage::from_bytes(&bytes, t)
+        })
+        .collect()
+}
 
 /// Tunables that the mapping file does not define.
 #[derive(Debug, Clone, PartialEq)]
@@ -404,6 +488,15 @@ pub struct Controller {
     cue_link: bool,
     browser: Option<Browser>,
     browser_changed: bool,
+    /// Browser controls go to the host as [`BrowseEvent`]s instead of the built-in folder browser.
+    external_browser: bool,
+    browse_events: Vec<BrowseEvent>,
+    /// Recent messages (monitor), controls seen since the last reset, unknown messages.
+    monitor: VecDeque<MonitorEntry>,
+    seen: BTreeSet<(String, u8)>,
+    unknown: BTreeMap<(u8, u8), usize>,
+    known_messages: HashSet<u16>,
+    recorder: Option<std::io::BufWriter<std::fs::File>>,
     loaded: [Option<PathBuf>; DECKS],
     pending_loads: Vec<(usize, PathBuf)>,
     last_load: [f64; DECKS],
@@ -415,6 +508,22 @@ pub struct Controller {
 
 impl Controller {
     pub fn new(mapping: MidiMapping) -> Controller {
+        // every input message of the mapping, including the LSB half of 14-bit controls
+        let mut known_messages = HashSet::new();
+        for e in &mapping.entries {
+            for b in e.input_bindings(&mapping.device) {
+                known_messages.insert(b.message);
+                if e.is_14bit(&mapping.device) {
+                    known_messages.insert(MappingEntry::lsb_message(b.message));
+                }
+            }
+        }
+        let mut c = Controller::new_inner(mapping);
+        c.known_messages = known_messages;
+        c
+    }
+
+    fn new_inner(mapping: MidiMapping) -> Controller {
         Controller {
             proc: InputProcessor::new(mapping),
             decks: Default::default(),
@@ -427,6 +536,13 @@ impl Controller {
             cue_link: false,
             browser: None,
             browser_changed: false,
+            external_browser: false,
+            browse_events: Vec::new(),
+            monitor: VecDeque::new(),
+            seen: BTreeSet::new(),
+            unknown: BTreeMap::new(),
+            known_messages: HashSet::new(),
+            recorder: None,
             loaded: Default::default(),
             pending_loads: Vec::new(),
             last_load: [f64::NEG_INFINITY; DECKS],
@@ -449,6 +565,16 @@ impl Controller {
     pub fn set_browser_root(&mut self, root: PathBuf) {
         self.browser = Some(Browser::new(root));
         self.browser_changed = true;
+    }
+
+    /// Let the host show the browser: BROWSE, LOAD, BACK, TAG and TRACK ◀▶ become [`BrowseEvent`]s
+    /// ([`Controller::take_browse_events`]).
+    pub fn set_external_browser(&mut self, on: bool) {
+        self.external_browser = on;
+    }
+
+    pub fn take_browse_events(&mut self) -> Vec<BrowseEvent> {
+        std::mem::take(&mut self.browse_events)
     }
 
     pub fn browser(&self) -> Option<&Browser> {
@@ -515,11 +641,120 @@ impl Controller {
     /// Process one MIDI message into engine commands.
     pub fn handle(&mut self, msg: &MidiMessage) -> Vec<Command> {
         self.now = msg.time_s;
+        let mut bytes = vec![msg.status, msg.data1];
+        bytes.extend(msg.data2);
+        if let Some(r) = self.recorder.as_mut() {
+            use std::io::Write;
+            let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
+            let _ = writeln!(r, "{:.4} {}", msg.time_s, hex.join(" "));
+        }
         let events = self.proc.process(msg);
         let mut out = Vec::new();
+        let mut functions = Vec::new();
         for ev in events {
             let f = function_of(self.proc.entry(&ev)).to_string();
+            functions.push(format!("{f}@{}", ev.deck));
+            self.seen.insert((f.clone(), ev.deck));
             out.extend(self.map(&f, ev.deck, ev.action));
+        }
+        let key = u16::from(msg.status) << 8 | u16::from(msg.data1);
+        let unknown = functions.is_empty() && !self.known_messages.contains(&key) && msg.status < 0xF0;
+        if unknown {
+            *self.unknown.entry((msg.status, msg.data1)).or_default() += 1;
+        }
+        let commands = out.iter().map(|c| format!("{c:?}").chars().take(60).collect()).collect();
+        if self.monitor.len() >= 200 {
+            self.monitor.pop_front();
+        }
+        self.monitor.push_back(MonitorEntry { time_s: msg.time_s, bytes, functions, commands, unknown });
+        out
+    }
+
+    /// Recent messages, oldest first.
+    pub fn monitor(&self) -> &VecDeque<MonitorEntry> {
+        &self.monitor
+    }
+
+    /// Controls (function, deck) that sent something since the last [`Controller::reset_test`].
+    pub fn seen(&self) -> &BTreeSet<(String, u8)> {
+        &self.seen
+    }
+
+    /// Messages without mapping entry: (status, data1) → count.
+    pub fn unknown(&self) -> &BTreeMap<(u8, u8), usize> {
+        &self.unknown
+    }
+
+    pub fn reset_test(&mut self) {
+        self.seen.clear();
+        self.unknown.clear();
+        self.monitor.clear();
+    }
+
+    /// All controls of the mapping that send something: (category, function, deck), sorted.
+    pub fn testable_controls(&self) -> Vec<(&'static str, String, u8)> {
+        let m = self.proc.mapping();
+        let mut v: BTreeSet<(&'static str, String, u8)> = BTreeSet::new();
+        for e in &m.entries {
+            let f = function_of(e).to_string();
+            if ignore_reason(&f).is_some() {
+                continue;
+            }
+            for b in e.input_bindings(&m.device) {
+                if b.deck <= 2 {
+                    v.insert((category(&f), f.clone(), b.deck));
+                }
+            }
+        }
+        v.into_iter().collect()
+    }
+
+    /// Every LED / indicator output of the mapping switched on (for an LED test), with its function.
+    pub fn led_outputs(&self) -> Vec<(String, Led)> {
+        let m = self.proc.mapping();
+        let mut v = Vec::new();
+        let mut seen = HashSet::new();
+        for e in &m.entries {
+            for b in e.output_bindings() {
+                if b.message != 0xFFFF && seen.insert(b.message) {
+                    v.push((function_of(e).to_string(), Led { status: (b.message >> 8) as u8, data1: b.message as u8, value: 0x7F }));
+                }
+            }
+        }
+        v
+    }
+
+    /// Append every received message to `path` (a MIDI log, see [`parse_midilog`]).
+    pub fn start_recording(&mut self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(f, "# rekordbox-rs MIDI log, device {}", self.proc.mapping().device)?;
+        writeln!(f, "# time_s status data1 data2")?;
+        self.recorder = Some(f);
+        Ok(())
+    }
+
+    pub fn stop_recording(&mut self) {
+        if let Some(mut r) = self.recorder.take() {
+            use std::io::Write;
+            let _ = r.flush();
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    /// Feed recorded messages and collect the engine commands with their times.
+    pub fn replay(&mut self, messages: &[MidiMessage]) -> Vec<(f64, Command)> {
+        let mut out = Vec::new();
+        for m in messages {
+            for c in self.handle(m) {
+                out.push((m.time_s, c));
+            }
         }
         out
     }
@@ -613,6 +848,22 @@ impl Controller {
                 vec![C::CueLink(self.cue_link)]
             }
             (Target::CrossfaderCurve, _, Some(v)) => vec![C::CrossfaderCurve(v as f32)],
+            (Target::Browse | Target::Zoom, _, _) if self.external_browser => {
+                if let Action::Relative { delta } = action {
+                    self.browse_events.push(if t == Target::Browse { BrowseEvent::Scroll(delta) } else { BrowseEvent::Page(delta) });
+                }
+                vec![]
+            }
+            (Target::BrowseEnter | Target::Back | Target::TagView | Target::Tag | Target::Related, Some(true), _) if self.external_browser => {
+                self.browse_events.push(match t {
+                    Target::BrowseEnter => BrowseEvent::Press,
+                    Target::Back => BrowseEvent::Back,
+                    Target::TagView => BrowseEvent::TagView,
+                    Target::Tag => BrowseEvent::Tag,
+                    _ => BrowseEvent::Related,
+                });
+                vec![]
+            }
             (Target::Browse | Target::Zoom, _, _) => {
                 if let (Some(b), Action::Relative { delta }) = (self.browser.as_mut(), action) {
                     if t == Target::Browse {
@@ -648,9 +899,17 @@ impl Controller {
                     return vec![C::InstantDouble(d)];
                 }
                 self.last_load[d] = self.now;
+                if self.external_browser {
+                    self.browse_events.push(BrowseEvent::Load(d));
+                    return vec![];
+                }
                 if let Some(p) = self.browser.as_ref().and_then(|b| b.selected_track()) {
                     self.request_load(d, p);
                 }
+                vec![]
+            }
+            (Target::TrackStep(fwd), Some(true), _) if self.external_browser => {
+                self.browse_events.push(BrowseEvent::Step(d, fwd));
                 vec![]
             }
             (Target::TrackStep(fwd), Some(true), _) => {

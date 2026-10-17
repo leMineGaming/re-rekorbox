@@ -7,7 +7,8 @@
 //! rbx-play tone [seconds]                             440 Hz test tone on the default device
 //! rbx-play midi-coverage <mapping.csv>                which mapping functions the engine handles
 //! ```
-//! `play` options: `--device NAME` (audio output), `--midi MAPPING.csv` (controller; MIDI in/out are
+//! `play` options: `--device NAME` (audio output), `--midi MAPPING.csv | auto` (controller; `auto` uses the
+//! built-in mapping of a connected XDJ-RX3; MIDI in/out are
 //! found by the mapping's device name, override with `--midi-in NAME` / `--midi-out NAME`). With a
 //! mapping loaded, `midi B0 22 41` on stdin injects a message as if the controller had sent it.
 //! `--samples DIR` fills the sampler from a folder (else built-in sounds), `--browse DIR` sets the
@@ -144,6 +145,19 @@ fn play(rest: &[&str]) -> Result<(), String> {
     println!("sampler: {}", names.join(", "));
     let opt = |k: &str| opts.iter().find(|(o, _)| *o == k).map(|(_, v)| *v);
     let ctl = match opt("midi") {
+        Some("auto") | Some("") => {
+            let (port, mapping) = rbx_engine::session::detect_controller().ok_or("--midi auto: no controller with a built-in mapping connected")?;
+            println!("controller: {port} (built-in mapping)");
+            Some(rbx_engine::session::start_controller_with(
+                mapping,
+                Some(&port),
+                opt("midi-out"),
+                opt("browse").map(std::path::PathBuf::from),
+                out.sender(),
+                out.state_handle(),
+                &loader,
+            )?)
+        }
         Some(m) => Some(start_controller(
             Path::new(m),
             opt("midi-in"),

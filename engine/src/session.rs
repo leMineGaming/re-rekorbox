@@ -626,6 +626,8 @@ pub struct ControllerHandle {
     /// MIDI input / output device names, if found.
     pub input_name: Option<String>,
     pub output_name: Option<String>,
+    /// Set to run an LED test (every output on in turn, then back to normal); cleared when done.
+    pub led_test: Arc<AtomicBool>,
     #[cfg(windows)]
     _input: Option<rekordbox_formats::midi_device::InputPort>,
 }
@@ -641,9 +643,36 @@ pub fn start_controller(
     state: Shared<MixerState>,
     loader: &Loader,
 ) -> Result<ControllerHandle, String> {
-    let m = load_mapping(mapping)?;
+    start_controller_with(load_mapping(mapping)?, midi_in, midi_out, browse, tx, state, loader)
+}
+
+/// A connected MIDI input for which a built-in mapping exists (e.g. an XDJ-RX3): (port name, mapping).
+pub fn detect_controller() -> Option<(String, rekordbox_formats::midi::MidiMapping)> {
+    #[cfg(windows)]
+    {
+        rekordbox_formats::midi_device::list_inputs()
+            .into_iter()
+            .find_map(|d| crate::controller::builtin_for_port(&d.name).map(|m| (d.name, m)))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Like [`start_controller`] with a mapping already in memory (e.g. a built-in one).
+pub fn start_controller_with(
+    m: rekordbox_formats::midi::MidiMapping,
+    midi_in: Option<&str>,
+    midi_out: Option<&str>,
+    browse: Option<PathBuf>,
+    tx: Sender<Command>,
+    state: Shared<MixerState>,
+    loader: &Loader,
+) -> Result<ControllerHandle, String> {
     let device = m.device.clone();
     let controller = Arc::new(Mutex::new(Controller::new(m)));
+    let led_test = Arc::new(AtomicBool::new(false));
     let log = &loader.log;
     let root = browse.or_else(|| std::env::var_os("USERPROFILE").map(|h| Path::new(&h).join("Music"))).filter(|p| p.is_dir());
     if let Some(r) = root {
@@ -688,10 +717,25 @@ pub fn start_controller(
                 let port = OutputPort::open(d.index)?;
                 log.say(format!("MIDI out (LEDs): {}", d.name));
                 output_name = Some(d.name.clone());
-                let c = controller.clone();
+                // weak: the thread ends (and closes the port) when the controller is dropped
+                let (weak, test) = (Arc::downgrade(&controller), led_test.clone());
                 std::thread::spawn(move || {
                     let mut last = std::collections::HashMap::new();
                     loop {
+                        let Some(c) = weak.upgrade() else { return };
+                        if test.load(Ordering::Relaxed) {
+                            // running light over every output, then all off and back to normal
+                            let leds = c.lock().unwrap().led_outputs();
+                            for (_, led) in &leds {
+                                if port.send(led.packed()).is_err() {
+                                    return;
+                                }
+                                std::thread::sleep(Duration::from_millis(50));
+                                let _ = port.send(crate::controller::Led { value: 0, ..*led }.packed());
+                            }
+                            last.clear();
+                            test.store(false, Ordering::Relaxed);
+                        }
                         let s = *state.lock().unwrap();
                         for led in c.lock().unwrap().leds(&s) {
                             let key = (led.status, led.data1);
@@ -708,11 +752,11 @@ pub fn start_controller(
             }
             None => log.say(format!("MIDI out: no device matching {device:?} found (no LED feedback)")),
         }
-        Ok(ControllerHandle { controller, input_name, output_name, _input: input })
+        Ok(ControllerHandle { controller, input_name, output_name, led_test, _input: input })
     }
     #[cfg(not(windows))]
     {
         let _ = (midi_in, midi_out, tx, state);
-        Ok(ControllerHandle { controller, input_name: None, output_name: None })
+        Ok(ControllerHandle { controller, input_name: None, output_name: None, led_test })
     }
 }

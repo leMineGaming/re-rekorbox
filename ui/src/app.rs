@@ -8,7 +8,8 @@ use rbx_engine::dsp::ColorFx;
 use rbx_engine::fx::{BeatFxKind, FxAssign};
 use rbx_engine::mixer::{Command, MixerState, DECKS};
 use rbx_engine::output::Output;
-use rbx_engine::session::{fill_sampler, start_controller, start_link, ControllerHandle, LinkHandle, Loader, Log};
+use rbx_engine::controller::BrowseEvent;
+use rbx_engine::session::{detect_controller, fill_sampler, start_controller, start_controller_with, start_link, ControllerHandle, LinkHandle, Loader, Log};
 
 use crate::settings::Settings;
 use crate::tracks::{build_rows, filter, RowSource, TrackRow};
@@ -87,6 +88,15 @@ pub struct App {
     restart_needed: bool,
     /// Last line written to the operation log (audio statistics once a minute).
     last_stats_log: std::time::Instant,
+    /// Tag list (TAG TRACK on the controller or the T column) and whether only it is shown.
+    pub tags: std::collections::BTreeSet<PathBuf>,
+    pub tag_view: bool,
+    /// Scroll the track list to the selection (after controller browsing).
+    scroll_to_selected: bool,
+    show_ctl_test: bool,
+    last_detect: std::time::Instant,
+    /// No automatic controller connection before this time (while an external test uses the port).
+    detect_paused_until: std::time::Instant,
 }
 
 impl App {
@@ -133,12 +143,20 @@ impl App {
             music_path: opts.music.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
             restart_needed: false,
             last_stats_log: std::time::Instant::now(),
+            tags: Default::default(),
+            tag_view: false,
+            scroll_to_selected: false,
+            show_ctl_test: false,
+            last_detect: std::time::Instant::now(),
+            detect_paused_until: std::time::Instant::now(),
         };
         for (d, s) in opts.load.iter().take(DECKS).enumerate() {
             app.loader.load(d, s);
         }
         if let Some(m) = opts.midi {
             app.connect_controller(m);
+        } else if app.settings.auto_controller {
+            app.detect_and_connect();
         }
         if let Some(a) = opts.djlink {
             app.link_adapter = a.clone().unwrap_or_default();
@@ -168,9 +186,149 @@ impl App {
         }
     }
 
+    /// Connect a plugged-in controller that has a built-in mapping (XDJ-RX3).
+    pub fn detect_and_connect(&mut self) -> bool {
+        let Some((port, mapping)) = detect_controller() else { return false };
+        self.log.say(format!("Controller erkannt: {port} (eingebautes Mapping)"));
+        self.connect_mapping(mapping, Some(&port)).is_ok()
+    }
+
+    /// Start the controller layer with a mapping; `port` overrides the MIDI port name to look for.
+    pub fn connect_mapping(&mut self, mapping: rekordbox_formats::midi::MidiMapping, port: Option<&str>) -> Result<(), String> {
+        match start_controller_with(mapping, port, port, None, self.out.sender(), self.out.state_handle(), &self.loader) {
+            Ok(h) => {
+                h.controller.lock().unwrap().set_external_browser(true);
+                self.ctl = Some(h);
+                self.error = None;
+                Ok(())
+            }
+            Err(e) => {
+                self.log.error(format!("Controller: {e}"));
+                Err(e)
+            }
+        }
+    }
+
+    /// Use an already running controller (tests, or a mapping loaded elsewhere).
+    pub fn attach_controller(&mut self, h: ControllerHandle) {
+        h.controller.lock().unwrap().set_external_browser(true);
+        self.ctl = Some(h);
+    }
+
+    pub fn controller(&self) -> Option<&ControllerHandle> {
+        self.ctl.as_ref()
+    }
+
+    /// Selected track row (index into [`App::rows`]).
+    pub fn selected(&self) -> Option<usize> {
+        self.selected
+    }
+
+    /// Browser operations from the controller: BROWSE moves the selection in the track list, LOAD
+    /// loads it, BACK leaves the tag list / clears the search / goes to the top, TAG marks tracks.
+    fn browse_events(&mut self) {
+        let Some(events) = self.ctl.as_ref().map(|c| c.controller.lock().unwrap().take_browse_events()) else { return };
+        if events.is_empty() {
+            return;
+        }
+        self.refresh_rows();
+        let pos = self.selected.and_then(|i| self.filtered.iter().position(|&f| f == i));
+        let n = self.filtered.len();
+        let s = self.state();
+        for ev in events {
+            let pos = self.selected.and_then(|i| self.filtered.iter().position(|&f| f == i)).or(pos);
+            let mut move_to = |k: i64| {
+                if n > 0 {
+                    let k = k.clamp(0, n as i64 - 1) as usize;
+                    self.selected = Some(self.filtered[k]);
+                    self.scroll_to_selected = true;
+                }
+            };
+            match ev {
+                BrowseEvent::Scroll(d) => move_to(pos.map_or(0, |p| p as i64 + i64::from(d))),
+                BrowseEvent::Page(d) => move_to(pos.map_or(0, |p| p as i64 + 10 * i64::from(d))),
+                BrowseEvent::Press => {
+                    if let Some(r) = self.selected.and_then(|i| self.rows.get(i)) {
+                        let d = (0..DECKS).find(|&d| !s.decks[d].loaded).or_else(|| (0..DECKS).find(|&d| !s.decks[d].playing)).unwrap_or(0);
+                        let p = r.path.to_string_lossy().into_owned();
+                        self.load(d, &p);
+                    }
+                }
+                BrowseEvent::Back => {
+                    if self.tag_view {
+                        self.tag_view = false;
+                    } else if !self.search.is_empty() {
+                        self.search.clear();
+                    } else {
+                        move_to(0);
+                    }
+                }
+                BrowseEvent::Load(d) => {
+                    if let Some(r) = self.selected.and_then(|i| self.rows.get(i)) {
+                        let p = r.path.to_string_lossy().into_owned();
+                        self.load(d, &p);
+                    }
+                }
+                BrowseEvent::Step(d, fwd) => {
+                    let current = self.loader.deck(d).source.map(PathBuf::from);
+                    let at = current.and_then(|c| self.filtered.iter().position(|&i| self.rows[i].path == c));
+                    let next = match at {
+                        Some(k) if fwd => (k + 1 < n).then_some(k + 1),
+                        Some(k) => k.checked_sub(1),
+                        None => (n > 0).then_some(0),
+                    };
+                    if let Some(k) = next {
+                        let p = self.rows[self.filtered[k]].path.to_string_lossy().into_owned();
+                        self.selected = Some(self.filtered[k]);
+                        self.scroll_to_selected = true;
+                        self.load(d, &p);
+                    }
+                }
+                BrowseEvent::Tag => {
+                    if let Some(r) = self.selected.and_then(|i| self.rows.get(i)) {
+                        if !self.tags.remove(&r.path) {
+                            self.tags.insert(r.path.clone());
+                        }
+                    }
+                }
+                BrowseEvent::TagView => self.tag_view = !self.tag_view,
+                BrowseEvent::Related => {
+                    if let Some(r) = self.selected.and_then(|i| self.rows.get(i)) {
+                        self.search = r.artist.clone();
+                    }
+                }
+            }
+            self.refresh_rows();
+        }
+    }
+
+    /// Release the controller's MIDI ports (e.g. for the controller self test).
+    pub fn disconnect_controller(&mut self, pause_detect: Duration) {
+        if let Some(h) = self.ctl.take() {
+            h.controller.lock().unwrap().stop_recording();
+            self.log.say("Controller getrennt");
+        }
+        self.show_ctl_test = false;
+        self.detect_paused_until = std::time::Instant::now() + pause_detect;
+    }
+
+    /// Every 3 s: connect a newly plugged-in controller.
+    fn poll_controller(&mut self) {
+        if self.ctl.is_some()
+            || !self.settings.auto_controller
+            || self.last_detect.elapsed() < Duration::from_secs(3)
+            || std::time::Instant::now() < self.detect_paused_until
+        {
+            return;
+        }
+        self.last_detect = std::time::Instant::now();
+        self.detect_and_connect();
+    }
+
     fn connect_controller(&mut self, mapping: PathBuf) {
         match start_controller(&mapping, None, None, None, self.out.sender(), self.out.state_handle(), &self.loader) {
             Ok(h) => {
+                h.controller.lock().unwrap().set_external_browser(true);
                 self.ctl = Some(h);
                 self.error = None;
                 self.settings.midi = Some(mapping);
@@ -268,9 +426,15 @@ impl App {
             self.rows_gen = generation;
             self.filtered_for = "\u{0}".into();
         }
-        if self.filtered_for != self.search {
+        let key = format!("{}\u{1}{}\u{1}{}", self.search, self.tag_view, self.tags.len());
+        if self.filtered_for != key {
             self.filtered = filter(&self.rows, &self.search);
-            self.filtered_for = self.search.clone();
+            if self.tag_view {
+                let tags = &self.tags;
+                let rows = &self.rows;
+                self.filtered.retain(|&i| tags.contains(&rows[i].path));
+            }
+            self.filtered_for = key;
         }
     }
 
@@ -322,6 +486,9 @@ impl App {
                 ui.label(RichText::new(e).color(Color32::from_rgb(255, 90, 90)).strong());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.ctl.is_some() && ui.button("Controller-Test").clicked() {
+                    self.show_ctl_test = !self.show_ctl_test;
+                }
                 if ui.button("Tasten").on_hover_text(SHORTCUTS).clicked() {
                     self.log.say(SHORTCUTS.replace('\n', "; "));
                 }
@@ -410,7 +577,11 @@ impl App {
                 self.settings.auto_analyze = self.loader.auto_analyze;
             }
             ui.separator();
-            ui.label(RichText::new("Controller (MIDI-Mapping, z. B. XDJ-RX3.midi.csv)").strong());
+            ui.label(RichText::new("Controller").strong());
+            if ui.checkbox(&mut self.settings.auto_controller, "XDJ-RX3 beim Anstecken automatisch verbinden (eingebautes Mapping)").changed() {
+                self.last_detect = std::time::Instant::now() - Duration::from_secs(10);
+            }
+            ui.label(RichText::new("Eigenes Mapping (optional, rekordbox-Format .midi.csv):").small());
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.midi_path).desired_width(300.0).hint_text("Pfad zur .midi.csv"));
                 if ui.button("Verbinden").clicked() && !self.midi_path.trim().is_empty() {
@@ -418,12 +589,20 @@ impl App {
                     self.connect_controller(p);
                 }
             });
+            let mut disconnect = false;
             if let Some(c) = &self.ctl {
-                ui.label(format!(
-                    "MIDI in: {}   MIDI out: {}",
-                    c.input_name.as_deref().unwrap_or("nicht gefunden"),
-                    c.output_name.as_deref().unwrap_or("nicht gefunden")
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{}: MIDI in {}, MIDI out {}",
+                        c.controller.lock().unwrap().mapping().device,
+                        c.input_name.as_deref().unwrap_or("nicht gefunden"),
+                        c.output_name.as_deref().unwrap_or("nicht gefunden")
+                    ));
+                    disconnect = ui.button("Trennen").clicked();
+                });
+            }
+            if disconnect {
+                self.disconnect_controller(Duration::from_secs(30));
             }
             ui.separator();
             ui.label(RichText::new("Pro DJ Link").strong());
@@ -462,8 +641,9 @@ impl App {
                 if ui.button("Vollständig (~3 min)").clicked() {
                     self.run_selftest(&[]);
                 }
-                if ui.button("mit Controller-Eingaben (20 s)").on_hover_text("Während des Tests Regler und Tasten am Controller bewegen").clicked() {
-                    self.run_selftest(&["--quick", "--midi-listen", "20"]);
+                if ui.button("Controller-Test (90 s)").on_hover_text("LED-Lauflicht am Pult, dann 90 s lang alle Bedienelemente bewegen. Das Pult wird dafür hier getrennt und danach wieder verbunden.").clicked() {
+                    self.disconnect_controller(Duration::from_secs(150));
+                    self.run_selftest(&["--quick", "--no-network", "--leds", "--midi-listen", "90"]);
                 }
             });
             if let Some(dir) = rbx_engine::session::data_dir() {
@@ -861,6 +1041,9 @@ impl App {
             ui.label("Suche");
             ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Suche: Interpret, Titel, Datei").desired_width(260.0));
             ui.label(format!("{} von {}", self.filtered.len(), self.rows.len()));
+            if ui.add(egui::Button::new(format!("Tag-Liste ({})", self.tags.len())).selected(self.tag_view)).on_hover_text("Nur markierte Tracks zeigen (TAG TRACK am Pult, Spalte T)").clicked() {
+                self.tag_view = !self.tag_view;
+            }
             ui.separator();
             let b = self.loader.batch();
             let label = format!("Fehlende analysieren ({})", missing.len());
@@ -885,11 +1068,11 @@ impl App {
         let row_h = 20.0;
         // column widths: deck, artist, title (rest), BPM, key, analysis
         let sp = ui.spacing().item_spacing.x;
-        let fixed = 36.0 + 220.0 + 80.0 + 50.0 + 90.0;
+        let fixed = 60.0 + 220.0 + 80.0 + 50.0 + 90.0;
         let title_w = (ui.available_width() - fixed - 6.0 * sp - 14.0).max(120.0);
-        let widths = [36.0, 220.0, title_w, 80.0, 50.0, 90.0];
+        let widths = [60.0, 220.0, title_w, 80.0, 50.0, 90.0];
         ui.horizontal(|ui| {
-            for (n, w) in ["Deck", "Interpret", "Titel", "BPM", "Key", "Analyse"].iter().zip(widths) {
+            for (n, w) in ["T  Deck", "Interpret", "Titel", "BPM", "Key", "Analyse"].iter().zip(widths) {
                 ui.add_sized(Vec2::new(w, 16.0), egui::Label::new(RichText::new(*n).small().strong()));
             }
         });
@@ -897,7 +1080,15 @@ impl App {
         let mut load: Option<(usize, String)> = None;
         let s = self.state();
         let n = self.filtered.len();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, n, |ui, range| {
+        let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        if std::mem::take(&mut self.scroll_to_selected) {
+            if let Some(k) = self.selected.and_then(|i| self.filtered.iter().position(|&f| f == i)) {
+                let step = row_h + ui.spacing().item_spacing.y;
+                area = area.vertical_scroll_offset((k as f32 * step - 3.0 * step).max(0.0));
+            }
+        }
+        let mut toggle_tag: Option<PathBuf> = None;
+        area.show_rows(ui, row_h, n, |ui, range| {
             for k in range {
                 let i = self.filtered[k];
                 let r = &self.rows[i];
@@ -906,7 +1097,12 @@ impl App {
                     .horizontal(|ui| {
                         ui.set_height(row_h);
                         let deck_txt = loaded_in.iter().map(|d| (d + 1).to_string()).collect::<Vec<_>>().join(",");
-                        ui.add_sized(Vec2::new(widths[0], row_h), egui::Label::new(RichText::new(deck_txt).color(ACCENT).strong()));
+                        let tagged = self.tags.contains(&r.path);
+                        let w0 = widths[0] - 18.0 - ui.spacing().item_spacing.x;
+                        if ui.add_sized(Vec2::new(18.0, row_h), egui::Button::selectable(tagged, "T").small()).on_hover_text("in die Tag-Liste").clicked() {
+                            toggle_tag = Some(r.path.clone());
+                        }
+                        ui.add_sized(Vec2::new(w0.max(10.0), row_h), egui::Label::new(RichText::new(deck_txt).color(ACCENT).strong()));
                         let sel = self.selected == Some(i);
                         let a = ui.add_sized(Vec2::new(widths[1], row_h), egui::Button::selectable(sel, r.artist.as_str()).truncate());
                         let t = ui.add_sized(Vec2::new(widths[2], row_h), egui::Button::selectable(sel, r.title.as_str()).truncate());
@@ -932,6 +1128,11 @@ impl App {
                 }
             }
         });
+        if let Some(p) = toggle_tag {
+            if !self.tags.remove(&p) {
+                self.tags.insert(p);
+            }
+        }
         if let Some((d, p)) = load {
             self.load(d, &p);
         }
@@ -1026,6 +1227,8 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(16));
         self.handle_drops(&ctx);
         self.shortcuts(&ctx);
+        self.poll_controller();
+        self.browse_events();
         self.side_effects();
         let s = self.state();
         self.log_stats(&s);
@@ -1075,6 +1278,13 @@ impl App {
         });
         if self.show_settings {
             self.settings_window(&ctx);
+        }
+        if self.show_ctl_test {
+            if let Some(h) = &self.ctl {
+                let mut open = true;
+                crate::ctltest::window(&ctx, h, &self.log, &mut open);
+                self.show_ctl_test = open;
+            }
         }
         self.persist();
     }

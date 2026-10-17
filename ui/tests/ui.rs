@@ -208,3 +208,46 @@ fn settings_round_trip() {
     assert_eq!(Settings::load(&f), s);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// MIDI message of a mapping function (deck 0 = global control).
+fn rx3_message(name: &str, deck: u8, value: u8, t: f64) -> rekordbox_formats::midi_input::MidiMessage {
+    let m = rekordbox_formats::midi::parse(rbx_engine::controller::XDJ_RX3_MAPPING);
+    let e = m.entries.iter().find(|e| rbx_engine::controller::function_of(e) == name).unwrap();
+    let b = e.input_bindings(&m.device).into_iter().find(|b| b.deck == deck).unwrap();
+    rekordbox_formats::midi_input::MidiMessage::from_bytes(&[(b.message >> 8) as u8, b.message as u8, value], t).unwrap()
+}
+
+#[test]
+fn browse_and_load_with_the_controller() {
+    let dir = temp("browse");
+    let mut h = harness(app_with_tracks(&dir));
+    assert!(wait(&mut h, 5.0, |a| a.rows().len() == 2));
+    let mapping = rekordbox_formats::midi::parse(rbx_engine::controller::XDJ_RX3_MAPPING);
+    h.state_mut().connect_mapping(mapping, Some("rbx-test-no-such-port")).unwrap();
+    let send = |h: &mut Harness<'static, App>, name: &str, deck: u8, value: u8, t: f64| {
+        let msg = rx3_message(name, deck, value, t);
+        let cmds = h.state().controller().unwrap().controller.lock().unwrap().handle(&msg);
+        assert!(cmds.is_empty(), "browser controls do not touch the engine");
+        h.run_steps(2);
+    };
+    // BROWSE two steps down: first row, then second row
+    send(&mut h, "Browse", 0, 0x41, 1.0);
+    assert_eq!(h.state().selected(), Some(0));
+    send(&mut h, "Browse", 0, 0x41, 1.1);
+    assert_eq!(h.state().selected(), Some(1));
+    let second = h.state().rows()[1].path.clone();
+    // LOAD on deck 1 loads the selected track
+    send(&mut h, "Load", 1, 0x7F, 2.0);
+    send(&mut h, "Load", 1, 0x00, 2.1);
+    assert!(wait(&mut h, 30.0, |a| a.loader.deck(0).source.as_deref().map(PathBuf::from) == Some(second.clone())), "deck 1 has the selected track");
+    // TAG TRACK, tag list view, BACK leaves it
+    send(&mut h, "AddToTagList", 0, 0x7F, 3.0);
+    assert!(h.state().tags.contains(&second));
+    send(&mut h, "TrackFilter", 0, 0x7F, 3.5);
+    assert!(h.state().tag_view);
+    send(&mut h, "Back", 0, 0x7F, 4.0);
+    assert!(!h.state().tag_view);
+    shot(&mut h, "controller-browse");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -2,15 +2,18 @@
 //! a report. Nothing is audible: audio devices only get silence, test audio is rendered offline.
 //!
 //! ```text
-//! rbx-selftest [--quick] [--soak SECONDS] [--tracks N] [--midi-listen SECONDS] [--no-device]
-//!              [--no-network] [--out DIR] [--open] [--pause]
+//! rbx-selftest [--quick] [--soak SECONDS] [--tracks N] [--midi-listen SECONDS] [--leds]
+//!              [--midi-replay FILE] [--no-device] [--no-network] [--out DIR] [--open] [--pause]
 //! ```
 //! Sections: audio quality (clicks, pitch, sync, echo, levels, routing), sound devices (callback timing
 //! with silence), performance, long run with random operation (offline and in real time), library
 //! and analysis accuracy against rekordbox on this machine, MIDI ports and mapping coverage, network
 //! adapters and Pro DJ Link (devices seen on the network). The report goes to
 //! `%APPDATA%\rekordbox-rs\selftest\` (Markdown) and the console; exit code 1 when a check failed.
-//! `--midi-listen 20` additionally records 20 s of controller input (move the controls meanwhile).
+//! `--midi-listen 60` records 60 s of controller input (move every control meanwhile): with a built-in
+//! mapping (XDJ-RX3) the report lists which controls sent something and which messages the mapping does
+//! not know, and the session is saved as a MIDI log. `--leds` runs a light over every LED of the unit.
+//! `--midi-replay FILE` plays a MIDI log through the controller layer and the mixer (offline).
 //! `--open` opens the HTML report afterwards, `--pause` waits for Enter before closing (used when the
 //! UI starts the test in its own console window).
 
@@ -58,6 +61,39 @@ struct Section {
 }
 
 impl Section {
+    /// Play a MIDI log through the controller layer (built-in mapping of its device) and the mixer.
+    fn add_replay(&mut self, f: &Path) {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            self.add(Status::Fail, "MIDI-Wiedergabe", format!("{} nicht lesbar", f.display()));
+            return;
+        };
+        let device = text.lines().next().and_then(|l| l.split("device ").nth(1)).unwrap_or("XDJ-RX3").trim().to_string();
+        let Some(mapping) = rbx_engine::controller::builtin_for_port(&device) else {
+            self.add(Status::Warn, "MIDI-Wiedergabe", format!("kein eingebautes Mapping für {device}"));
+            return;
+        };
+        let msgs = rbx_engine::controller::parse_midilog(&text);
+        let result = std::panic::catch_unwind(|| {
+            let mut c = rbx_engine::controller::Controller::new(mapping);
+            let cmds = c.replay(&msgs);
+            let mut m = busy_mixer();
+            let t0 = msgs.first().map_or(0.0, |m| m.time_s);
+            let dur = msgs.last().map_or(0.0, |m| m.time_s) - t0 + 1.0;
+            let events: Vec<(f64, Command)> = cmds.iter().map(|(t, c)| (t - t0, c.clone())).collect();
+            let r = rbx_engine::quality::render(&mut m, events, dur.min(600.0));
+            let bad = r.master.iter().filter(|f| !f[0].is_finite() || f[0].abs() > 1.0).count();
+            (cmds.len(), c.seen().len(), c.unknown().len(), bad)
+        });
+        match result {
+            Ok((cmds, seen, unknown, bad)) => self.add(
+                if bad == 0 { Status::Ok } else { Status::Fail },
+                format!("MIDI-Wiedergabe {}", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                format!("{} Nachrichten → {cmds} Engine-Befehle, {seen} Bedienelemente, {unknown} unbekannte Nachrichten; Audio gültig: {}", msgs.len(), bad == 0),
+            ),
+            Err(_) => self.add(Status::Fail, "MIDI-Wiedergabe", "Absturz beim Abspielen"),
+        }
+    }
+
     fn new(title: &'static str) -> Section {
         println!("\n== {title} ==");
         Section { title, items: Vec::new() }
@@ -75,6 +111,8 @@ struct Opts {
     soak_s: f64,
     tracks: usize,
     midi_listen_s: f64,
+    leds: bool,
+    midi_replay: Option<PathBuf>,
     device: bool,
     network: bool,
     out: Option<PathBuf>,
@@ -92,6 +130,8 @@ fn main() -> ExitCode {
         soak_s: val("--soak").and_then(|v| v.parse().ok()).unwrap_or(if quick { 10.0 } else { 60.0 }),
         tracks: val("--tracks").and_then(|v| v.parse().ok()).unwrap_or(if quick { 5 } else { 20 }),
         midi_listen_s: val("--midi-listen").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        leds: args.iter().any(|a| a == "--leds"),
+        midi_replay: val("--midi-replay").map(PathBuf::from),
         device: !args.iter().any(|a| a == "--no-device"),
         network: !args.iter().any(|a| a == "--no-network"),
         out: val("--out").map(PathBuf::from),
@@ -601,26 +641,85 @@ fn midi(o: &Opts) -> Section {
         if !matched {
             s.add(Status::Info, "Controller", "kein Gerät mit passendem Mapping angeschlossen");
         }
+        if o.leds {
+            for d in &outs {
+                let Some(mapping) = rbx_engine::controller::builtin_for_port(&d.name) else { continue };
+                let Ok(port) = OutputPort::open(d.index) else { continue };
+                let c = rbx_engine::controller::Controller::new(mapping);
+                let leds = c.led_outputs();
+                println!("LED-Test an „{}“: {} LEDs leuchten nacheinander auf …", d.name, leds.len());
+                let mut ok = 0;
+                for (_, led) in &leds {
+                    if port.send(led.packed()).is_ok() {
+                        ok += 1;
+                    }
+                    std::thread::sleep(Duration::from_millis(60));
+                    let _ = port.send(rbx_engine::controller::Led { value: 0, ..*led }.packed());
+                }
+                s.add(if ok == leds.len() { Status::Ok } else { Status::Warn }, format!("LED-Test {}", d.name), format!("{ok}/{} LED-Nachrichten gesendet (ob alle leuchteten, siehst nur du)", leds.len()));
+            }
+        }
         if o.midi_listen_s > 0.0 {
             for d in &ins {
                 let Ok((port, rx)) = InputPort::open(d.index) else { continue };
-                println!("Bewege jetzt {} Sekunden lang Regler und Tasten an „{}“ …", o.midi_listen_s, d.name);
+                let mut ctl = rbx_engine::controller::builtin_for_port(&d.name).map(rbx_engine::controller::Controller::new);
+                let log = data_dir().map(|dd| dd.join("midi").join(format!("selbsttest-{}.midilog", timestamp().replace([' ', ':'], "-"))));
+                if let (Some(c), Some(l)) = (ctl.as_mut(), &log) {
+                    let _ = c.start_recording(l);
+                }
+                println!("Bewege jetzt {} Sekunden lang alle Regler, Tasten, Fader, Pads und Jogs an „{}“ (beide Decks, auch mit SHIFT) …", o.midi_listen_s, d.name);
                 let t = Instant::now();
                 let mut seen = std::collections::BTreeSet::new();
                 let mut count = 0usize;
                 while t.elapsed().as_secs_f64() < o.midi_listen_s {
-                    if let Ok((packed, _)) = rx.recv_timeout(Duration::from_millis(100)) {
+                    if let Ok((packed, ms)) = rx.recv_timeout(Duration::from_millis(100)) {
                         let b = packed.to_le_bytes();
                         if b[0] & 0xF0 != 0xF0 {
                             count += 1;
                             seen.insert((b[0], b[1]));
                         }
+                        if let (Some(c), Some(msg)) = (ctl.as_mut(), rekordbox_formats::midi_input::MidiMessage::from_packed(packed, f64::from(ms) / 1000.0)) {
+                            let _ = c.handle(&msg);
+                        }
                     }
                 }
                 drop(port);
                 s.add(if count > 0 { Status::Ok } else { Status::Warn }, format!("Eingaben von {}", d.name), format!("{count} Nachrichten, {} verschiedene Bedienelemente", seen.len()));
+                if let Some(mut c) = ctl {
+                    c.stop_recording();
+                    let all = c.testable_controls();
+                    let hit = |g: &str| {
+                        let items: Vec<_> = all.iter().filter(|(x, _, _)| *x == g).collect();
+                        let ok = items.iter().filter(|(_, f, dk)| c.seen().contains(&(f.clone(), *dk))).count();
+                        let missing: Vec<String> = items.iter().filter(|(_, f, dk)| !c.seen().contains(&(f.clone(), *dk))).take(12).map(|(_, f, dk)| format!("{f}@{dk}")).collect();
+                        (ok, items.len(), missing)
+                    };
+                    for g in ["Deck", "Mixer", "Effekte", "Pads", "Browser"] {
+                        let (ok, n, missing) = hit(g);
+                        if n == 0 {
+                            continue;
+                        }
+                        s.add(
+                            if ok == n { Status::Ok } else { Status::Info },
+                            format!("Bedienelemente {g}"),
+                            format!("{ok}/{n} haben gesendet{}", if missing.is_empty() { String::new() } else { format!("; noch nicht z. B.: {}", missing.join(", ")) }),
+                        );
+                    }
+                    let unknown: Vec<String> = c.unknown().iter().map(|((st, d1), n)| format!("{st:02X} {d1:02X} ×{n}")).collect();
+                    s.add(
+                        if unknown.is_empty() { Status::Ok } else { Status::Warn },
+                        "Nachrichten ohne Mapping-Eintrag",
+                        if unknown.is_empty() { "keine".into() } else { unknown.join(", ") },
+                    );
+                    if let Some(l) = log {
+                        s.add(Status::Info, "MIDI-Aufnahme", l.display().to_string());
+                    }
+                }
             }
         }
+    }
+    if let Some(f) = &o.midi_replay {
+        s.add_replay(f);
     }
     #[cfg(not(windows))]
     {

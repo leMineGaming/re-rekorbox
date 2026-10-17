@@ -16,6 +16,8 @@ pub struct Settings {
     pub djlink_adapter: String,
     pub auto_analyze: bool,
     pub zoom_s: f64,
+    /// Connect a known controller (built-in mapping) automatically when it is plugged in.
+    pub auto_controller: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +32,7 @@ impl Default for Settings {
             djlink_adapter: String::new(),
             auto_analyze: true,
             zoom_s: 8.0,
+            auto_controller: true,
         }
     }
 }
@@ -56,6 +59,7 @@ impl Settings {
                 "djlink_adapter" => s.djlink_adapter = v.to_string(),
                 "auto_analyze" => s.auto_analyze = v != "0" && v != "false",
                 "zoom_s" => s.zoom_s = v.parse().ok().filter(|z: &f64| (1.0..=64.0).contains(z)).unwrap_or(8.0),
+                "auto_controller" => s.auto_controller = v != "0" && v != "false",
                 _ => {}
             }
         }
@@ -65,7 +69,7 @@ impl Settings {
     pub fn to_text(&self) -> String {
         let p = |p: &Option<PathBuf>| p.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
         format!(
-            "device={}\nbuffer={}\nmusic={}\nanlz={}\nmidi={}\ndjlink={}\ndjlink_adapter={}\nauto_analyze={}\nzoom_s={}\n",
+            "device={}\nbuffer={}\nmusic={}\nanlz={}\nmidi={}\ndjlink={}\ndjlink_adapter={}\nauto_analyze={}\nzoom_s={}\nauto_controller={}\n",
             self.device.as_deref().unwrap_or(""),
             self.buffer.map_or(String::new(), |b| b.to_string()),
             p(&self.music),
@@ -74,7 +78,8 @@ impl Settings {
             u8::from(self.djlink),
             self.djlink_adapter,
             u8::from(self.auto_analyze),
-            self.zoom_s
+            self.zoom_s,
+            u8::from(self.auto_controller)
         )
     }
 
