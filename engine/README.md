@@ -19,6 +19,7 @@ Werteverarbeitung je Steuerelement, SPEC §5f/§5f-2) und die Funktionsnamen des
 | `output` | Echtzeit-Ausgabe (`cpal`/WASAPI); Geräte mit ≥ 4 Kanälen bekommen den Kopfhörer-Cue auf Kanal 3/4 |
 | `control` | Textbefehle und zeitgesteuerte Skripte |
 | `controller` | MIDI → Engine-Befehl über das Mapping, LED-/Anzeige-Ausgabe |
+| `analyze` | **Eigene Track-Analyse** (SPEC §5j/§8a): Wellenformen aller Varianten, Beatgrid, Tonart, FLAC-Suchtabelle; schreibt `ANLZ0000.DAT/.EXT/.2EX` im rekordbox-Format |
 
 ## Ausprobieren
 
@@ -42,6 +43,28 @@ Jede geladene Datei – über `load`, Browser, Controller oder `lload` – bekom
 Beat-Positionen** (auch bei Tempowechseln: Sync, Quantize, Beat-Loop und Beat Jump folgen ihnen), Hot Cues und
 Memory Cues (sofern in den Analysedateien gespeichert). `lib <Wörter>` sucht (Interpret/Titel/Dateiname),
 `lload <Deck> <Nr>` lädt ein Suchergebnis, im Browser erscheint `[Library]` an oberster Stelle.
+
+## Analyse
+
+Dateien ohne rekordbox-Analyse werden beim Laden **automatisch analysiert** (≈ 1 s je Track, im Hintergrund;
+abschalten mit `--no-analyze`). Ergebnis: Beatgrid, Tonart, alle Wellenformen – gespeichert unter
+`%APPDATA%\rekordbox-rs\ANLZ` und beim nächsten Start wieder gelesen. Ganze Ordner vorab:
+
+```bash
+cargo run --release -p rbx-engine --bin rbx-analyze -- "C:\Pfad\Musik" --missing
+```
+
+`rbx-analyze <Datei|Ordner>... [--out DIR] [--force] [--missing] [--compare] [--threads N] [--limit N]`:
+`--missing` nur Dateien ohne rekordbox-Analyse, `--compare` zeigt rekordbox' BPM daneben, `--force` überschreibt.
+Vorhandene rekordbox-Analysen haben in der Bibliothek Vorrang; eigene Analysen tragen den vollen Pfad
+(`PPTH`) und eine Seitendatei `rbx-analysis.txt` (BPM, Tonart, Camelot). Die erzeugten Dateien lassen sich mit
+`rbf anlz` und jedem ANLZ-Leser öffnen.
+
+Verfahren: eigene, öffentliche Algorithmen (spektraler Fluss + Autokorrelation/Kamm für das Tempo,
+Krumhansl–Schmuckler für die Tonart), **nicht** rekordbox' neuronale Netze. Gegen rekordbox-Analysen derselben
+Dateien: BPM 57/60 exakt, Beat-Phase 48/58 innerhalb 10 ms, Taktanfang 42/58, Wellenform-Höhen 94 % ±1
+(Details SPEC §8a). Die Tonart ist nur synthetisch geprüft, weil rekordbox sie nur in der verschlüsselten
+Datenbank speichert. Nicht erzeugt: Tempowechsel, Phrasen (`PSSI`), Cue-Vorschläge.
 
 ## Pioneer DJ XDJ-RX3
 
@@ -93,10 +116,12 @@ offen (SPEC U28–U31).
 
 ## Tests
 
-`cargo test -p rbx-engine`: 61 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
+`cargo test -p rbx-engine`: 69 Tests mit synthetischem Audio und synthetischen MIDI-Daten (kein Audio- oder
 MIDI-Gerät nötig): Decoder, Deck, Loops, Sync, Jog, EQ-Frequenzgang, Color FX, alle 14 Beat FX
 (Zeitpunkt, Gate-Anteil, Tonhöhe, Bremse), Tap-Tempo, Reverse, Slip, Key Lock, Key Shift, Bremse,
-Memory Cues, Auto Cue, Sampler, Cue-Bus, Crossfader-Kurve, Browser und die Controller-Zuordnung samt LEDs.
+Memory Cues, Auto Cue, Sampler, Cue-Bus, Crossfader-Kurve, Browser, die Controller-Zuordnung samt LEDs und
+die Analyse (Tempo/Phase eines Drum-Loops, Tonart von Dur-/Moll-Kadenzen, Wellenform-Größen, ANLZ-Ausgabe über
+die Bibliothek zurückgelesen, Vorrang der rekordbox-Analyse, PVB2-Layout).
 
 **Nicht geprüft: wie es klingt** – dafür muss jemand zuhören.
 

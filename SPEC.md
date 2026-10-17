@@ -344,7 +344,7 @@ PSSI. Für das ANLZ-Format ist die **Player-Umrechnung** maßgeblich.
 | `PWAV`, `PWV3` | 1 Byte | **Bit 7–5 = Wert w (0…7)**, **Bit 4–0 = Höhe h (0…31)** | Generator GH:0x1412b9f10: `dst = src[4]·0x20 + (src[0] & 0x1F)` |
 | `PWV2` | 1 Byte | Bit 4–0 = Höhe (beob. 0…15), Bit 7–5 immer 0 | [OBS] |
 | `PWV5` | `be_u16` | **Bit 15–13 = c0, 12–10 = c1, 9–7 = c2 (je 0…7), Bit 6–2 = Höhe (0…31), Bit 1–0 = 0** | Generator GH:0x1412bd6e0 (Byte-Swap von `v<<2`, `v = c0<<11 \| c1<<8 \| c2<<5 \| h`); Bit 1–0 = 0 in 5 940 606/5 940 606 Einträgen |
-| `PWV4` | 6 Byte | b0, b1: 0…255; b2…b5: 0…127 | [OBS] – Semantik unbekannt (U14) |
+| `PWV4` | 6 Byte | 1200 Einträge; je Eintrag Datensatz A (§5j) des Abschnitts × 127: b0 = max, b1 = min als vorzeichenbehaftetes Byte, b2 = \|TP400\|, b3…b5 = Bänder < 200 / 200–2000 / > 2000 Hz | [OBS/Kalibrierung] ~98 % der Bytes ±2 (§8a) |
 | `PWV6` | 3 Byte | je 0…~103 | [OBS] – Inferenz: 3 Bänder, Vorschau |
 | `PWV7` | 3 Byte | je 0…127 (7 Bit) | [OBS] – Inferenz: 3 Bänder, Detail |
 
@@ -827,6 +827,42 @@ Reimplementierung nutzt eigene, öffentliche Verfahren (Abschnitt 8a).
 **Beobachtet** [OBS: 1831 lokale Analysen, Abschnitt 5a]: Beatgrids mit 2 Nachkommastellen BPM, Beat-im-Takt
 1–4; 265/1805 mit Tempowechsel; PWV3/PWV5 teilen dieselbe Höhenfolge (5d).
 
+### Abbildung auf die Tags (Kalibrierung an 1825 Paaren Audio ↔ rekordbox-Analyse) [OBS]
+
+Spaltenzahl und Lage stimmen exakt (Versatz 0). Je Detailspalte (1/150 s) bzw. Vorschau-Abschnitt werden die
+ms-Datensätze zusammengefasst (Spitzenwerte); `peak` = max |mono|, `rbᵢ` = B-Band i / max(B-Bänder). Gefundene
+Abbildungen (Inferenz aus Anpassung, nicht aus dem Code):
+
+| Tag | Abbildung |
+|---|---|
+| `PWV3`/`PWV5` Höhe | 31 · ((peak − 0,12) / 0,88)^1,6 |
+| `PWV3` Wert w | 5 · rb₂ |
+| `PWV5` c0, c1, c2 | 7 · rb₁^0,65, 5 · rb₂^1,2, 7 · rb₃^0,7 |
+| `PWV7` (Detail, 3 Bänder) | 100 · C₁^0,75, 100 · C₂^0,75, 130 · C₃^1,1 |
+| `PWV6` (Vorschau 1200) | 64 · m₁^0,85, 60 · m₂^0,7, 120 · m₃^0,85 (Mittelwerte der C-Bänder je Abschnitt) |
+| `PWAV` (400) | h = 30 · mean(peak) − 1,5; w = 4,8 − 4,5 · mean(B < 100 Hz) |
+| `PWV2` (100) | h = 21 · mean(peak), ≤ 15 |
+| `PWV4` (1200) | Datensatz A × 127 (Tabelle in 5d) |
+| `PWVC` | [80, clamp(100 / max C₂, 100…200), clamp(90 / max C₃, 100…200)] (Normierung der Vorschaubänder) |
+
+### Suchtabellen [OBS]
+- **FLAC → `PVB2`** (in `.EXT`): 400 Einträge à 20 Byte `[u64 erstes Sample des Frames, u64 Byte-Offset ab dem
+  ersten Frame, u32 Blockgröße]`; Eintrag i zielt auf i · ⌊Samples / 400⌋ und nimmt den Frame, der dieses Sample
+  enthält. Nachbau 15/15 byte-identisch. Kopf-Feld `u64@10` = Anzahl Samples (bestätigt die Inferenz aus 8a).
+- **MP3 → `PVBR`**: Tabelle aus Nullen, Zusatzfeld = Anzahl Samples. Andere Formate (WAV, M4A, AIFF): kein `PVB2`,
+  `PVBR` mit Nullen.
+
+### Tonart
+rekordbox speichert die Tonart nur in der (verschlüsselten) Datenbank, nicht in ANLZ-Dateien; auch die lokalen
+Audiodateien tragen keine Tonart-Tags (0/300 geprüft). Ein Abgleich mit rekordbox ist daher nicht möglich.
+
+### Eigene Analysen – Ablage (Reimplementierung, keine rekordbox-Beobachtung)
+`%APPDATA%\rekordbox-rs\ANLZ\<3 hex>\<13 hex>\` (FNV-1a über den klein geschriebenen Pfad) mit
+`ANLZ0000.DAT/.EXT/.2EX` in rekordbox-Tag-Reihenfolge (DAT: PPTH PVBR PQTZ PWAV PWV2 PCOB PCOB; EXT: PPTH PWV3
+PCOB PCOB PCO2 PCO2 PWV5 PWV4 [PVB2]; 2EX: PPTH PWV7 PWV6 PWVC). `PPTH` enthält den vollen Pfad der Audiodatei;
+dazu `rbx-analysis.txt` (Pfad, Samples, Rate, BPM, Konfidenz, Tonart, Camelot). Nicht erzeugt: `PQT2`, `PSSI`
+(Phrasen), `.3EX`, Cues (Cues liegen bei rekordbox ebenfalls nur in der Datenbank).
+
 ## 6. Bewusst ausgeschlossen (Begründung)
 
 - **Lizenzierung / Kopierschutz** (`lsapiw64.dll`, `clatc.dll`, Aktivierung, Abo-Prüfung): wird weder analysiert noch nachgebaut oder umgangen.
@@ -845,7 +881,7 @@ Reimplementierung nutzt eigene, öffentliche Verfahren (Abschnitt 8a).
 | U11 | PQT2-Header-Felder w3…w8 und Bedeutung der 2-Byte-Einträge | Dekompilat |
 | U12 | PSSI: Layout, mood, Label-Umrechnung, Fill-in geklärt (5d); offen: Bedeutung von `u16[5..8]` und `u8@1C/@1D` (nur durchgereicht) | Nutzer der djplay-Felder +0x18…+0x24 |
 | U13 | Schlüssel d2…d12 im `.3EX`-Embedding | Dekompilat |
-| U14 | Wellenformen: Bit-Layout PWAV/PWV3/PWV5 geklärt (5d); offen: Farbsemantik c0–c2/w, Layout PWV4, PWV6/7-Bandzuordnung | Renderer-Code |
+| U14 | Wellenformen: Bit-Layout PWAV/PWV3/PWV5 geklärt (5d), Inhalt PWV4/PWV6/PWV7 durch Kalibrierung zugeordnet (5j); offen: wie der Renderer c0–c2/w in Farben umsetzt | Renderer-Code |
 | U15 | PCPT: Slot, Typ, Start/Ende geklärt (5b); PCP2-Builder geklärt (5c); offen: `u16@1E` = 1000, `@28…@34`, PCP2 `@30…@57` | Dekompilat der Cue-Struktur |
 | U16 | PKEY: vom EXT-Code nur roh gespeichert [GH:0x14127b650], in keiner der 1827 `.EXT`-Dateien vorhanden | Nutzer der Rohdaten finden |
 | U17 | PWVC-Werte (80…105) – Bedeutung | Nutzer im Wellenform-Renderer |
@@ -863,7 +899,7 @@ Reimplementierung nutzt eigene, öffentliche Verfahren (Abschnitt 8a).
 | U29 | DJ Link: Namen der Abspielzustands-Codes (0x78 bzw. Mixer-Status) – im Code nur Gruppierung belegt | Mitschnitt |
 | U30 | XDJ-RX3 im DJ-Link-Netz: tatsächliche Gerätenummer, Geräteart und gesendete Pakettypen | Mitschnitt mit `rbf djlink-listen` am Gerät |
 | U31 | DJ Link: Dauer des Alterungs-Zeitgebers je Gerät (vermutlich 10000 ms) und genaue Zahl der IdUse-Durchläufe | Mitschnitt |
-| U32 | Analyse: genaue Abbildung der ms-Datensätze auf 5-Bit-Höhe und 3-Bit-Farbwerte (PWV3/PWV5/PWAV) und Inhalt von PWV4 | Kalibrierung an beobachteten Analysen |
+| U32 | Analyse: genaue Abbildung der ms-Datensätze auf die Tag-Werte – durch Kalibrierung angenähert (5j, Genauigkeit 8a), exakte Formeln der Spaltenbildner nicht nachgezeichnet | Dekompilat GH:0x141236eb0 ff. |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |
@@ -871,7 +907,7 @@ Reimplementierung nutzt eigene, öffentliche Verfahren (Abschnitt 8a).
 | U6 | Inhalt des Electron-Agents (`app.asar`) | REA-JS-Analyse (ohne Ghidra möglich) |
 | U7 | Semantik von `PSvLinkSysMgrINI.xml`-Timern (Einheit ms?) | Dekompilat |
 
-## 8a. Implementierung und Validierung (Stand 2026-10-16)
+## 8a. Implementierung und Validierung (Stand 2026-10-17)
 
 - Rust-Crate `rekordbox-formats` (siehe README): `anlz` (§5a–§5d) und `xml` (§5e), 32 Tests auf synthetischen Daten.
 - Validierung mit `rbf check` gegen die 7307 lokalen ANLZ-Dateien [OBS]: 0 Fehler; 5484/5484 Container
@@ -880,6 +916,35 @@ Reimplementierung nutzt eigene, öffentliche Verfahren (Abschnitt 8a).
 - Nebenbefund: PVB2 `u64@10` = 5 600 864 bei einem ~127 s langen Track (44,1 kHz) → stützt die Inferenz „Anzahl Samples“.
 - Modul `midi` (§5f), validiert mit `rbf midi` gegen die 69 mitgelieferten Mappings [OBS]: alle `version 1`,
   13 505 Einträge, 0 Fehler, 69/69 Write/Parse-Round-Trips identisch; 4 Einträge mit leerem `Type` (→ Button).
+
+### Eigene Track-Analyse (`rbx-engine::analyze`, `rbx-analyze`, Stand 2026-10-17)
+Verfahren (öffentlich, ohne rekordbox-Modelle):
+- **Wellenformen**: Filterbank und ms-Datensätze nach 5j, Abbildung auf Tags per Kalibrierung (Tabelle 5j).
+- **Beatgrid**: spektraler Fluss (STFT 2048, 100 Bilder/s) in vier Bändern (voll, < 150, 150–2000, > 2000 Hz);
+  grobes Tempo per Autokorrelation mit log-normalem Vorwissen (128 BPM, σ = 0,55 Oktaven, Bereich 70–180, wie in
+  den beobachteten Grids); Feinsuche per Kamm (0,01 BPM); ganzzahliges Tempo bevorzugt, wenn es ≥ 98,5 % der
+  Bewertung erreicht; Phase (Beat vs. Offbeat) und Taktanfang über lineare Gewichte auf Bandanteilen und
+  Chroma-Neuheit, angepasst an den Beobachtungen; konstantes Tempo.
+- **Tonart**: Krumhansl–Schmuckler (Krumhansl–Kessler-Profile) auf einem Halbton-Spektrum (STFT 8192 alle
+  0,25 s, G2–B6, Weißung über eine Oktave, nur lokale Spitzen).
+
+Validierung gegen rekordbox-Analysen derselben Dateien (Tracks, die nicht zur Anpassung benutzt wurden):
+
+| Größe | Ergebnis |
+|---|---|
+| BPM (60 Tracks) | 57/60 exakt (2 Nachkommastellen) |
+| Beat-Phase | 48/58 innerhalb 10 ms |
+| Taktanfang (Beat 1) | 42/58 |
+| PWV3-Höhe | 94 % der Spalten ±1 |
+| PWV4 | ~98 % der Bytes ±2 |
+| Farbwerte PWV3/PWV5 | 91–96 % ±1 |
+| PWV6/PWV7 | ~5 % mittlerer Fehler (bezogen auf den Wertebereich) |
+| PWAV/PWV2 | 13–16 % mittlerer Fehler |
+| PVB2 (FLAC) | 15/15 byte-identisch |
+| Tonart | nur synthetisch geprüft (Dur-/Moll-Kadenzen), kein Vergleich möglich (5j) |
+
+Laufzeit ~0,9 s je Track einschließlich Dekodieren (ein Kern). Nicht umgesetzt: Tempowechsel im Grid,
+Phrasen (`PSSI`), Cue-Vorschläge.
 
 ## 8. Werkzeug-Status (Grenzen dieser Analyse)
 

@@ -29,6 +29,8 @@ Interoperabilität und eigene Erweiterungen für eine Installation von rekordbox
 Dazu im Workspace: **[`engine/`](engine/README.md)** – Zwei-Deck-Audio-Engine (`rbx-engine`, Programm `rbx-play`),
 Eigenentwurf für das MVP, nicht aus dem rekordbox-Code abgeleitet: EQ, Sound Color FX, 14 Beat FX, Pad FX,
 Sampler, Kopfhörer-Cue, Browser; der XDJ-RX3 ist mit allen 220 Mapping-Funktionen angebunden (`--midi`).
+Außerdem eine **eigene Track-Analyse** (`rbx-analyze`, automatisch beim Laden): Beatgrid, Tonart und alle
+Wellenformen, geschrieben als ANLZ-Dateien im rekordbox-Format (SPEC §5j, Genauigkeit §8a).
 
 ## Bauen und testen
 
@@ -95,8 +97,8 @@ Tempowechsel), 1794 mit Phrasen, keine gespeicherten Cues. Die 69 mitgelieferten
   TEMPO-Import als Beatgrid-Expansion, 64-Farben-Hot-Cue-Palette.
   Offen bzw. Designentscheidung: Datumsformat von `DateAdded` (SPEC U20), Vorgabe `PRODUCT Name="rekordbox"`.
 - **Unbekannte Feldbedeutungen** werden unverändert mitgeführt, aber nicht interpretiert:
-  `PMAI`-Felder, `PCPT`-Felder `@1E` und `@28…@34`, `PQT2`-Nutzdaten, `PSSI u16[5..8]`, `PWV4`-Einträge, Farbsemantik
-  von `PWV5 c0..c2` (SPEC §7).
+  `PMAI`-Felder, `PCPT`-Felder `@1E` und `@28…@34`, `PQT2`-Nutzdaten, `PSSI u16[5..8]`, Farbsemantik
+  von `PWV5 c0..c2` (SPEC §7). Der Inhalt von `PWV4`/`PWV6`/`PWV7` ist durch Kalibrierung zugeordnet (SPEC §5j).
 - `PCO2`, `PWVC`, `PKEY`, `PVDI` werden roh durchgereicht; die PVDI-Verschleierung wird bewusst nicht nachgebaut.
 - **MIDI**: Toggle, Parameter, JogRotateAbsPos und JogTimestamp haben keine Eingangsverarbeitung; die
   Tempo-Polynomkurve des DDJ-SX2 (Typ 8 auf `B?04`) ist nicht nachgebaut; System-Exclusive wird nicht empfangen.
@@ -110,7 +112,8 @@ Tempowechsel), 1794 mit Phrasen, keine gespeicherten Cues. Die 69 mitgelieferten
 - Lizenzierung, Aktivierung, Kopierschutz (`lsapiw64.dll`, `clatc.dll`).
 - Entschlüsselung von `master.db` / `product.db` – kein Schlüssel wird extrahiert oder eingebettet.
 - Cloud-/Account-Dienste und deren Protokolle.
-- Audio-Engine, DSP, UI, ML-Modelle (Beat-/Cue-Erkennung, Stem-Separation).
+- Audio-Engine, DSP, UI (Eigenentwürfe statt Nachbau); ML-Modelle und Gewichte (Beat-/Cue-Erkennung,
+  Stem-Separation) werden nicht verwendet – die Analyse nutzt eigene, öffentliche Verfahren.
 - NFS-Dateifreigabe für DJ-Link-Geräte (`PSvNFSd.exe`, `NFSDaemon.dll`) und die Mobilgeräte-/Track-Übertragung.
 - `export.pdb` (Geräte-Datenbank): Engine, Strings und Zeilen sind belegt, das Seitenformat noch nicht – dafür wird ein
   USB-/Ordner-Export als Testdatei benötigt (SPEC U23).

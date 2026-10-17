@@ -33,6 +33,15 @@ pub struct Cue {
     pub end_ms: Option<u32>,
 }
 
+/// Where an analysis comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Source {
+    #[default]
+    Rekordbox,
+    /// Written by this project's analyzer (full path in `PPTH`, side-car `rbx-analysis.txt`).
+    Own,
+}
+
 /// One analysed track.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibTrack {
@@ -53,6 +62,9 @@ pub struct LibTrack {
     pub samples: Option<u64>,
     pub cues: Vec<Cue>,
     pub structure: Option<SongStructure>,
+    /// Musical key (e.g. `Am`) from an own analysis.
+    pub key: Option<String>,
+    pub source: Source,
 }
 
 impl LibTrack {
@@ -133,7 +145,13 @@ pub fn read_track(dir: &Path) -> Option<LibTrack> {
         samples: None,
         cues: Vec::new(),
         structure: None,
+        key: None,
+        source: Source::Rekordbox,
     };
+    if let Ok(side) = std::fs::read_to_string(dir.join("rbx-analysis.txt")) {
+        t.source = Source::Own;
+        t.key = side.lines().find_map(|l| l.strip_prefix("key=")).map(str::to_string);
+    }
     for tag in dat.iter().chain(ext.iter()) {
         match tag {
             Tag::Path(p) if t.stored_path.is_empty() => t.stored_path = p.clone(),
@@ -262,19 +280,74 @@ pub fn default_music_root() -> Option<PathBuf> {
 impl Library {
     /// Read all analysis folders below `anlz_root` and match them against `music_roots`.
     pub fn build(anlz_root: &Path, music_roots: &[PathBuf]) -> Library {
+        Library::build_multi(&[anlz_root.to_path_buf()], music_roots)
+    }
+
+    /// Like [`Library::build`] with several analysis folders (e.g. rekordbox's and our own). When two
+    /// analyses describe the same audio file, the first folder wins (rekordbox before own).
+    pub fn build_multi(anlz_roots: &[PathBuf], music_roots: &[PathBuf]) -> Library {
         let index = MusicIndex::build(music_roots);
-        let dirs = find_anlz_dirs(anlz_root);
         let mut lib = Library::default();
-        lib.report.anlz_dirs = dirs.len();
         lib.report.music_files = index.files;
-        for d in &dirs {
-            match read_track(d) {
-                Some(t) => lib.tracks.push(t),
-                None => lib.report.unreadable += 1,
+        for root in anlz_roots {
+            let dirs = find_anlz_dirs(root);
+            lib.report.anlz_dirs += dirs.len();
+            for d in &dirs {
+                match read_track(d) {
+                    Some(t) => lib.tracks.push(t),
+                    None => lib.report.unreadable += 1,
+                }
             }
         }
         lib.match_files(&index);
+        lib.dedupe();
         lib
+    }
+
+    /// Drop later analyses of an audio file that an earlier one already covers.
+    fn dedupe(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        let mut order: Vec<(usize, LibTrack)> = self.tracks.drain(..).enumerate().collect();
+        order.sort_by_key(|(i, t)| (t.source == Source::Own, *i));
+        let mut kept = Vec::new();
+        for (_, t) in order {
+            let key = t.path.clone().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_else(|| t.file_name.to_lowercase());
+            if seen.insert(key) {
+                kept.push(t);
+            }
+        }
+        self.tracks = kept;
+        self.tracks.sort_by_key(|t| (t.artist.clone().unwrap_or_default().to_lowercase(), t.title.to_lowercase()));
+        self.reindex();
+    }
+
+    fn reindex(&mut self) {
+        self.by_path.clear();
+        for (i, t) in self.tracks.iter().enumerate() {
+            if let Some(p) = &t.path {
+                self.by_path.entry(p.clone()).or_insert(i);
+            }
+        }
+    }
+
+    /// Add (or replace) one analysis, e.g. right after analysing a file.
+    pub fn insert(&mut self, mut t: LibTrack) {
+        if t.path.is_none() {
+            let p = PathBuf::from(&t.stored_path);
+            if p.is_file() {
+                t.path = Some(p);
+            }
+        }
+        if let Some(p) = &t.path {
+            let rekordbox_has_it = self.tracks.iter().any(|x| x.path.as_ref() == Some(p) && x.source == Source::Rekordbox);
+            if rekordbox_has_it && t.source == Source::Own {
+                return;
+            }
+            self.tracks.retain(|x| x.path.as_ref() != Some(p));
+        }
+        self.tracks.push(t);
+        self.tracks.sort_by_key(|t| (t.artist.clone().unwrap_or_default().to_lowercase(), t.title.to_lowercase()));
+        self.reindex();
     }
 
     /// Build from already read tracks (tests, other sources).
@@ -288,9 +361,11 @@ impl Library {
     fn match_files(&mut self, index: &MusicIndex) {
         let r = &mut self.report;
         for t in self.tracks.iter_mut() {
+            // own analyses store the full path; use it when the file is there
+            let direct = Path::new(&t.stored_path);
             let found = index.lookup(&t.file_name);
             t.candidates = found.len();
-            t.path = found.first().cloned();
+            t.path = if direct.is_absolute() && direct.is_file() { Some(direct.to_path_buf()) } else { found.first().cloned() };
             if t.path.is_some() {
                 r.matched += 1;
             } else {

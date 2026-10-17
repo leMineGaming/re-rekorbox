@@ -16,6 +16,8 @@
 //! The rekordbox library (analysis folder + music folder, `--anlz DIR`, `--music DIR`, `--no-library`)
 //! is read in the background; loaded files get beat grid, beat positions and cues from it; `lib words`
 //! searches it, `lload <deck> <n>` loads a search result, the browser shows `[Library]`.
+//! Files without an analysis are analysed automatically on load (own analyzer, saved below
+//! `%APPDATA%/rekordbox-rs/ANLZ`; `--no-analyze` turns this off).
 //! sends beat packets of the playing deck; `link` on stdin shows the network, `linksync 1 on [N]` lets
 //! deck 1 follow tempo and beat of DJ Link device N (default: the first one sending beats).
 //! Sources: an audio file path, `tone` (440 Hz sine) or `click:BPM` (click track) – the latter two
@@ -143,7 +145,8 @@ fn play(rest: &[&str]) -> Result<(), String> {
     let device = opts.iter().find(|(k, _)| *k == "device").map(|(_, v)| *v);
     let out = Output::open(device)?;
     println!("output: {} ({} Hz, {} ch)", out.device_name, out.sample_rate, out.channels);
-    let loader = Loader::new(out.sender(), out.sample_rate);
+    let mut loader = Loader::new(out.sender(), out.sample_rate);
+    loader.auto_analyze = !opts.iter().any(|(k, _)| *k == "no-analyze");
     if !opts.iter().any(|(k, _)| *k == "no-library") {
         let opt = |k: &str| opts.iter().find(|(o, _)| *o == k).map(|(_, v)| std::path::PathBuf::from(v));
         loader.start_library(opt("anlz"), opt("music"));
@@ -423,6 +426,8 @@ struct Loader {
     loaded: Shared<[Option<String>; 2]>,
     titles: Shared<[Option<String>; 2]>,
     browser_pending: Arc<std::sync::atomic::AtomicBool>,
+    /// Analyse loaded files that have no analysis (`--no-analyze` turns it off).
+    auto_analyze: bool,
 }
 
 impl Loader {
@@ -434,6 +439,7 @@ impl Loader {
             loaded: Default::default(),
             titles: Default::default(),
             browser_pending: Default::default(),
+            auto_analyze: true,
         }
     }
 
@@ -446,7 +452,9 @@ impl Loader {
         };
         let me = self.clone();
         std::thread::spawn(move || {
-            let lib = Library::build(&anlz, &[music]);
+            let mut roots = vec![anlz];
+            roots.extend(rbx_engine::analyze::default_output_root().filter(|p| p.is_dir()));
+            let lib = Library::build_multi(&roots, &[music]);
             let r = lib.report;
             println!("library: {} tracks, {} with audio file, {} with beat grid", r.tracks, r.matched, r.with_grid);
             *me.library.write().unwrap() = Some(lib);
@@ -479,10 +487,11 @@ impl Loader {
     }
 
     /// Send the analysis of `path` to `deck` if the library knows it.
-    fn apply(&self, deck: usize, path: &str) {
+    /// Send the analysis of `path` to `deck`; returns false when the library has none.
+    fn apply(&self, deck: usize, path: &str) -> bool {
         let g = self.library.read().unwrap();
-        let Some(lib) = g.as_ref() else { return };
-        let Some(t) = lib.by_path(Path::new(path)) else { return };
+        let Some(lib) = g.as_ref() else { return false };
+        let Some(t) = lib.by_path(Path::new(path)) else { return false };
         let a = rbx_engine::analysis::TrackAnalysis::from_library(t);
         println!(
             "deck {}: {} – {}{}",
@@ -493,6 +502,48 @@ impl Loader {
         );
         self.titles.lock().unwrap()[deck] = Some(a.title.clone());
         let _ = self.tx.send(Command::ApplyAnalysis { deck, analysis: Arc::new(a) });
+        true
+    }
+
+    /// Analyse a loaded file that has no analysis yet (own analyzer, SPEC §5j), store it in the
+    /// own analysis folder, add it to the library and apply it to the deck if it is still loaded.
+    fn analyze_missing(&self, deck: usize, path: &str, pcm: &rbx_engine::pcm::Pcm) {
+        let p = Path::new(path);
+        if !p.is_file() {
+            return;
+        }
+        let Some(root) = rbx_engine::analyze::default_output_root() else { return };
+        println!("deck {}: no analysis – analysing {} …", deck + 1, p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let t = std::time::Instant::now();
+        let r = rbx_engine::analyze::analyze_pcm(p, pcm);
+        let dir = match rbx_engine::analyze::write_anlz(&r, &root) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("analysis not saved: {e}");
+                return;
+            }
+        };
+        println!(
+            "deck {}: analysed in {:.1} s – {}{}",
+            deck + 1,
+            t.elapsed().as_secs_f64(),
+            r.grid.as_ref().map_or("no beat grid".into(), |g| format!("{:.2} BPM", g.bpm)),
+            r.key.map_or(String::new(), |(k, _)| format!(", key {} ({})", k.name(), k.camelot()))
+        );
+        if let Some(track) = rekordbox_formats::library::read_track(&dir) {
+            let mut g = self.library.write().unwrap();
+            match g.as_mut() {
+                Some(lib) => lib.insert(track),
+                None => {
+                    let mut lib = rekordbox_formats::library::Library::default();
+                    lib.insert(track);
+                    *g = Some(lib);
+                }
+            }
+        }
+        if self.loaded.lock().unwrap()[deck].as_deref() == Some(path) {
+            self.apply(deck, path);
+        }
     }
 
     /// Decode on a worker thread, load, then attach the analysis.
@@ -502,10 +553,12 @@ impl Loader {
         std::thread::spawn(move || match source(&spec, me.sample_rate) {
             Ok((pcm, grid)) => {
                 println!("deck {}: loaded {spec}", deck + 1);
-                let _ = me.tx.send(Command::Load { deck, pcm, grid });
+                let _ = me.tx.send(Command::Load { deck, pcm: pcm.clone(), grid });
                 me.loaded.lock().unwrap()[deck] = Some(spec.clone());
                 me.titles.lock().unwrap()[deck] = None;
-                me.apply(deck, &spec);
+                if !me.apply(deck, &spec) && me.auto_analyze {
+                    me.analyze_missing(deck, &spec, &pcm);
+                }
             }
             Err(e) => eprintln!("{e}"),
         });

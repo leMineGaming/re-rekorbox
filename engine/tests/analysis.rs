@@ -121,6 +121,8 @@ fn analysis_from_a_library_track() {
         samples: None,
         cues: vec![Cue { slot: 2, start_ms: 3000, end_ms: None }, Cue { slot: 0, start_ms: 8000, end_ms: None }],
         structure: None,
+        key: None,
+        source: rekordbox_formats::library::Source::Rekordbox,
     };
     let a = TrackAnalysis::from_library(&t);
     assert_eq!(a.title, "A - B");

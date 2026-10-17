@@ -149,6 +149,7 @@ fn coverage_lists_handled_and_missing() {
     assert!(yes.contains("PlayPause") && yes.contains("PAD5_BeatLoop"));
     assert!(yes.contains("EQHigh") && yes.contains("CFX1On") && yes.contains("CFXParameterCH2"));
     assert!(yes.contains("JogPitchBend"), "deliberately mapped to no action");
+    assert!(no.is_empty(), "every XDJ-RX3 function is handled: {no:?}");
 }
 
 #[test]
