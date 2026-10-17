@@ -14,6 +14,8 @@ pub enum Tag {
     Path(String),
     /// `PQTZ` – beat grid (§5b, semantics §5a).
     BeatGrid(BeatGrid),
+    /// `PVBR` – 400-entry u32 table plus one extra u32.
+    Vbr(Vbr),
     /// `PWAV` / `PWV2` – fixed-size preview waveforms.
     WavePreview(WavePreview),
     /// `PWV3`…`PWV7` – sized waveform tables.
@@ -36,6 +38,7 @@ impl Tag {
         Ok(match raw.fourcc {
             FourCC::PPTH => Tag::Path(decode_path(raw)?),
             FourCC::PQTZ => Tag::BeatGrid(BeatGrid::from_raw(raw)?),
+            FourCC::PVBR => Tag::Vbr(Vbr::from_raw(raw)?),
             FourCC::PWAV | FourCC::PWV2 => Tag::WavePreview(WavePreview::from_raw(raw)?),
             FourCC::PWV3 | FourCC::PWV4 | FourCC::PWV5 | FourCC::PWV6 | FourCC::PWV7 => {
                 Tag::Waveform(Waveform::from_raw(raw)?)
@@ -53,6 +56,7 @@ impl Tag {
         match self {
             Tag::Path(p) => encode_path(p),
             Tag::BeatGrid(b) => b.to_raw(),
+            Tag::Vbr(v) => v.to_raw(),
             Tag::WavePreview(w) => w.to_raw(),
             Tag::Waveform(w) => w.to_raw(),
             Tag::CueList(c) => c.to_raw(),
@@ -174,6 +178,66 @@ impl BeatGrid {
             b.write(&mut body);
         }
         RawTag::new(FourCC::PQTZ, header, body)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// PVBR
+
+/// Number of u32 entries in the `PVBR` table.
+pub const PVBR_ENTRIES: usize = 400;
+
+/// `PVBR` (§5b/§5h): header 16 bytes (`u16@0C`, `u16@0E`); payload normally 0x644 bytes =
+/// 400 × `be_u32` table + one extra `be_u32`. The payload is kept verbatim; [`Vbr::table`] and
+/// [`Vbr::extra`] apply the reader's length rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vbr {
+    pub unknown_0c: u16,
+    pub unknown_0e: u16,
+    pub data: Vec<u8>,
+}
+
+impl Vbr {
+    pub fn new(table: &[u32; PVBR_ENTRIES], extra: u32) -> Self {
+        let mut data = Vec::with_capacity(0x644);
+        for v in table {
+            data.extend_from_slice(&v.to_be_bytes());
+        }
+        data.extend_from_slice(&extra.to_be_bytes());
+        Vbr { unknown_0c: 0, unknown_0e: 0, data }
+    }
+
+    pub fn from_raw(raw: &RawTag) -> Result<Self> {
+        expect(raw, FourCC::PVBR)?;
+        let h = raw.full_header();
+        need("PVBR header", &h, 0x10)?;
+        Ok(Vbr { unknown_0c: be_u16(&h, 0x0C), unknown_0e: be_u16(&h, 0x0E), data: raw.body.clone() })
+    }
+
+    pub fn to_raw(&self) -> RawTag {
+        let mut h = Vec::with_capacity(4);
+        h.extend_from_slice(&self.unknown_0c.to_be_bytes());
+        h.extend_from_slice(&self.unknown_0e.to_be_bytes());
+        RawTag::new(FourCC::PVBR, h, self.data.clone())
+    }
+
+    /// Table as the reader sees it: read when the payload is 0x640 or 0x644 bytes, otherwise zeros.
+    pub fn table(&self) -> Vec<u32> {
+        let n = self.data.len();
+        if n == 0x640 || n == 0x644 {
+            (0..PVBR_ENTRIES).map(|i| be_u32(&self.data, i * 4)).collect()
+        } else {
+            vec![0; PVBR_ENTRIES]
+        }
+    }
+
+    /// Extra value: last u32 when the payload is 0x644 bytes, the only u32 when it is 4 bytes, else 0.
+    pub fn extra(&self) -> u32 {
+        match self.data.len() {
+            0x644 => be_u32(&self.data, 0x640),
+            4 => be_u32(&self.data, 0),
+            _ => 0,
+        }
     }
 }
 

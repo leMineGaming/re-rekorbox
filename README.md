@@ -26,8 +26,8 @@ Voraussetzung: Rust (stable, getestet mit 1.99.1).
 cargo test
 ```
 
-49 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
-23 für ANLZ, 14 für rekordbox.xml, 7 für MIDI-Mappings, 5 für Pad-Dateien. Erwartete Bytes und Regeln stammen jeweils aus der SPEC.
+51 Tests auf **synthetischen** Testdaten (keine Originaldateien im Repository):
+24 für ANLZ, 14 für rekordbox.xml, 8 für MIDI-Mappings, 5 für Pad-Dateien. Erwartete Bytes und Regeln stammen jeweils aus der SPEC.
 
 ## CLI
 
@@ -60,7 +60,7 @@ Die 69 mitgelieferten MIDI-Mappings: alle gültig, 13 505 Einträge, 69/69 Round
 - **Unbekannte Feldbedeutungen** werden unverändert mitgeführt, aber nicht interpretiert:
   `PMAI`-Felder, `PCPT`-Felder außer Slot, `PQT2`-Nutzdaten, `PSSI u16[5..8]`, `PWV4`-Einträge, Farbsemantik
   von `PWV5 c0..c2` (SPEC §7).
-- `PVBR`, `PCO2`, `PWVC`, `PKEY`, `PVDI` werden roh durchgereicht.
+- `PCO2`, `PWVC`, `PKEY`, `PVDI` werden roh durchgereicht; die PVDI-Verschleierung wird bewusst nicht nachgebaut.
 
 ## Bewusst nicht nachgebaut
 

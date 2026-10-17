@@ -82,6 +82,7 @@ fn show_anlz(path: &Path) -> R {
                     println!("      #{:<3} beat {:>4}  {:<9}{}", p.index, p.beat, p.label(s.mood).unwrap_or("?"), fill);
                 }
             }
+            Ok(Tag::Vbr(v)) => println!("  table[0..4]={:?} extra={}", &v.table()[..4], v.extra()),
             Ok(Tag::Raw(_)) => println!("  (raw)"),
             Err(e) => println!("  DECODE ERROR: {e}"),
         }

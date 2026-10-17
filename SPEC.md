@@ -164,9 +164,16 @@ beobachteten Bytes `00000001 00010000 00010000 00000000`. Bedeutung der Felder w
 Header 16 Bytes: `u16 @0x0C` (Default 0), **`u16 @0x0E` = Pfadlänge in Bytes**. Danach `len/2` UTF-16-Code-Units,
 jeweils mit `be_u16` gelesen → **UTF-16BE bestätigt**. Default: header_len = total_len = 0x10 (leerer Pfad).
 
-### PVBR [GH:0x14126f490 Default]
-Default: header_len 0x10, total_len 0x654 (1620), `u16 @0x0C` = 0, 0x640 = **1600 Nullbytes** (Inferenz: 400 × u32).
-Die Nutzlänge 1604 = 1600 + 4 Bytes; die letzten 4 Bytes sind ungeklärt (U9).
+### PVBR [GH:0x14126f490 Default, GH:0x141270770 Reader]
+Header 16 Bytes (`u16@0C`). Nutzlänge L: ist L ≥ 0x640, werden **400 × `be_u32`** gelesen (Tabelle); ist L = 0x644 oder
+L = 4, folgt (bzw. besteht L aus) **ein weiteres `be_u32`** („extra“); andere Längen ≠ 0x640: Tabelle und extra = 0, Nutzdaten
+übersprungen. Default: 0x640 Nullbytes. [OBS] In allen 1831 Dateien L = 0x644, Tabelle vollständig 0 (Inferenz:
+VBR-Suchtabelle, nur bei VBR-Dateien gefüllt), extra ≠ 0 in 18 Dateien. Bedeutung von extra offen (U9).
+
+### DAT-Lesealgorithmus [GH:0x14126fb80]
+Anders als EXT/2EX **streng sequenziell**: PMAI, PPTH, PVBR, PQTZ, PWAV, PWV2, PCOB (Typ 1, sonst −1), PCOB (Typ 0,
+sonst −1) – jeder Tag muss in genau dieser Reihenfolge folgen, sonst −2 (bzw. −8 bei zu wenig Bytes). Ein Flag
+des Aufrufers beendet das Lesen nach PPTH (Nur-Pfad-Modus). Unbekannte Tags sind in `.DAT` damit nicht zulässig.
 
 ### PQTZ [GH:0x141270980 Reader, GH:0x141270ac0 Einträge]
 Header 24 Bytes: `u16 @0x0C`, `u16 @0x0E`, **`u16 @0x10` (Default 8)**, `u16 @0x12`, **`u32 @0x14` = Anzahl N**.
@@ -228,7 +235,12 @@ sonst wird der Puffer genullt und die Nutzdaten übersprungen (tolerantes Lesen)
 | `PWV6` | GH:0x141277d20 | **0x14 Pflicht**, `u16@0C`=0 | `u16@0E` = Eintragsgröße (3), `u32@10` = Anzahl (1200) | Größe × Anzahl |
 | `PWV7` | GH:0x141277f30 | **0x18 Pflicht**, `u16@0C`=0 | `u16@0E` = Eintragsgröße (3), `u32@10` = Anzahl, `u16@14`, `u16@16` | Größe × Anzahl |
 | `PWVC` | inline in GH:0x1412779f0 | (beob. 0x0E) | `u16@0C`, `u16@0E`, `u16@10`, `u16@12` – beobachtet `0, 80, 80…100, 80…105` (1102 Varianten) | – (Inferenz: Skalierung je Band, U17) |
-| `PVDI` | GH:0x141278280 | ? | nicht untersucht | **in keiner Datei beobachtet** (U18) |
+| `PVDI` | GH:0x141278280 | **0x18 Pflicht** | `u16@0C` (Flag, Bit 15 siehe unten), `u16@0E`, `u16@10`, **`u16@12` = Eintragsgröße**, **`u32@14` = Anzahl** | Größe × Anzahl; **in keiner Datei beobachtet** |
+
+**PVDI-Verschleierung:** Ist Bit 15 von `u16@0C` gesetzt, wird die Nutzlast nach dem Lesen mit einer XOR-Verschleierung
+umgewandelt (GH:0x1412bbb50, Schlüssel aus einem eingebetteten String abgeleitet) und das Flag gelöscht. Als
+Schutzmaßnahme analog zum DB-Schlüssel wird das Verfahren **bewusst weder spezifiziert noch nachgebaut**; die
+Implementierung reicht PVDI unverändert durch.
 
 ### PCP2-Einträge (Inhalt von PCO2) [GH:0x14127c300, Header-Reader GH:0x14127c750]
 Pro Eintrag: Header (GH:0x14127c750, nicht weiter zerlegt), dann ein **`u16`-Längenfeld + UTF-16BE-Kommentar**
@@ -531,7 +543,7 @@ Benutzervarianten [GH:0x141c0ecf0].
 |---|---|---|
 | U1 | ~~Container-Struktur der ANLZ-Dateien~~ → **geklärt durch Beobachtung (Abschn. 5a)**; Code-Bestätigung ausstehend | Ghidra-Analyse läuft |
 | U8 | Bedeutung der 16 konstanten PMAI-Header-Bytes | Dekompilat |
-| U9 | Inhalt von PVBR (1604 Bytes) | Dekompilat |
+| U9 | PVBR: Layout geklärt (5b); offen: Semantik von Tabelle und extra | Nutzer der PVBR-Struktur |
 | U10 | PWVC-Inhalt (6 Bytes) | Dekompilat |
 | U11 | PQT2-Header-Felder w3…w8 und Bedeutung der 2-Byte-Einträge | Dekompilat |
 | U12 | PSSI: Layout, mood, Label-Umrechnung, Fill-in geklärt (5d); offen: Bedeutung von `u16[5..8]` und `u8@1C/@1D` (nur durchgereicht) | Nutzer der djplay-Felder +0x18…+0x24 |
@@ -540,7 +552,7 @@ Benutzervarianten [GH:0x141c0ecf0].
 | U15 | PCPT-Feldsemantik (0x0C, 0x10…0x34) und PCO2-Format | Dekompilat der Nutzer dieser Strukturen |
 | U16 | PKEY: vom EXT-Code nur roh gespeichert [GH:0x14127b650], in keiner der 1827 `.EXT`-Dateien vorhanden | Nutzer der Rohdaten finden |
 | U17 | PWVC-Werte (80…105) – Bedeutung | Nutzer im Wellenform-Renderer |
-| U18 | PVDI (2EX) – Format, Reader GH:0x141278280 | Dekompilat |
+| U18 | PVDI: Header geklärt (5c); Inhalt verschleiert → bewusst nicht weiter untersucht | – |
 | U19 | PQT2 `u32@2C`, `u32@30/34` und Bedeutung der 2-Byte-Einträge | Dekompilat der PQT2-Nutzer |
 | U20 | rekordbox.xml: `TotalTime` = Sekunden geklärt (5e); offen: `DateAdded` = Text aus der DB (Inferenz: Spalte `StockDate`, GH:0x1420cb5a0), Datumsformat und Einheiten von `Size`/`BitRate` | eigener XML-Export als Testdatei |
 | U21 | ~~Location-Umwandlung~~ → **geklärt** (5e: Reader `\`→`/`, Writer unverändert) | – |

@@ -157,6 +157,28 @@ fn beat_grid_too_short_body_is_an_error() {
     assert!(matches!(BeatGrid::from_raw(&raw), Err(AnlzError::TooShort { .. })));
 }
 
+#[test]
+fn vbr_table_and_extra_length_rules() {
+    use rekordbox_formats::anlz::tags::Vbr;
+    let mut table = [0u32; 400];
+    for (i, v) in table.iter_mut().enumerate() {
+        *v = i as u32 * 1000;
+    }
+    let v = Vbr::new(&table, 0xDEAD_BEEF);
+    let raw = v.to_raw();
+    assert_eq!(raw.header_len(), 16);
+    assert_eq!(raw.total_len(), 16 + 0x644);
+    let back = Vbr::from_raw(&raw).unwrap();
+    assert_eq!(back.table()[399], 399_000);
+    assert_eq!(back.extra(), 0xDEAD_BEEF);
+    let only_table = Vbr { data: v.data[..0x640].to_vec(), ..v.clone() };
+    assert_eq!((only_table.table()[1], only_table.extra()), (1000, 0));
+    let only_extra = Vbr { data: vec![0, 0, 0, 7], ..v.clone() };
+    assert_eq!((only_extra.table()[1], only_extra.extra()), (0, 7));
+    let odd = Vbr { data: vec![1; 100], ..v };
+    assert_eq!((odd.table()[0], odd.extra()), (0, 0), "other lengths: zeros");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Waveforms (§5b, §5d)
 
