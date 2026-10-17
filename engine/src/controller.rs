@@ -11,6 +11,9 @@
 //! [`ControllerConfig`].
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use crate::browser::Browser;
 
 use rekordbox_formats::midi::{MappingEntry, MidiMapping};
 use rekordbox_formats::midi_input::{Action, InputProcessor, MidiMessage};
@@ -121,6 +124,23 @@ pub enum Target {
     ChannelLevel,
     /// Known function that deliberately triggers nothing (see `ignore_reason`).
     NoOp,
+    /// Sampler pad n (0..7) start / stop; the slot is `deck * 8 + n`.
+    SamplerStart(usize),
+    SamplerStop(usize),
+    SamplerVolume,
+    HeadphoneCue,
+    MasterCue,
+    CueLink,
+    CrossfaderCurve,
+    Browse,
+    Zoom,
+    BrowseEnter,
+    Back,
+    TagView,
+    Tag,
+    Related,
+    Load,
+    TrackStep(bool),
 }
 
 /// Pad modes of the XDJ-RX3 (mode buttons, with SHIFT the second mode).
@@ -168,6 +188,17 @@ impl Target {
                 | Target::BeatFxAuto
                 | Target::BeatFxAdjust(_)
                 | Target::BeatFxAssign(_)
+                | Target::SamplerVolume
+                | Target::MasterCue
+                | Target::CueLink
+                | Target::CrossfaderCurve
+                | Target::Browse
+                | Target::Zoom
+                | Target::BrowseEnter
+                | Target::Back
+                | Target::TagView
+                | Target::Tag
+                | Target::Related
         )
     }
 }
@@ -209,6 +240,21 @@ pub fn target_of(function: &str) -> Option<Target> {
         "CFX4On" => ColorSelect(ColorFx::Sweep),
         "CFX5On" => ColorSelect(ColorFx::Noise),
         "CFX6On" => ColorSelect(ColorFx::Crush),
+        "AuxTrim" => SamplerVolume,
+        "HeadphoneCue" => HeadphoneCue,
+        "MasterCue" => MasterCue,
+        "LinkCue" => CueLink,
+        "CrossFaderCurve" => CrossfaderCurve,
+        "Browse" => Browse,
+        "Browse+Shift" => Zoom,
+        "Browse+Press" | "Browse+Press+Shift" => BrowseEnter,
+        "Back" => Back,
+        "Back+Shift" | "TrackFilter" | "TrackFilter+Shift" => TagView,
+        "AddToTagList" => Tag,
+        "AddToTagList+Shift" => Related,
+        "Load" => Load,
+        "TrackNext" => TrackStep(true),
+        "TrackPrev" => TrackStep(false),
         "Reverse" => Reverse,
         "Slip" => Slip,
         "MasterTempo" => MasterTempo,
@@ -267,6 +313,10 @@ pub fn target_of(function: &str) -> Option<Target> {
                 BeatLoopPad(n - 5)
             } else if (f.ends_with(".BeatJump") || f.ends_with("_BeatJump+Shift")) && (1..=8).contains(&n) {
                 BeatJumpPad(n - 1)
+            } else if f.ends_with(".Sampler.Start") && (1..=8).contains(&n) {
+                SamplerStart(n - 1)
+            } else if f.ends_with(".Sampler.Stop") && (1..=8).contains(&n) {
+                SamplerStop(n - 1)
             } else if f.ends_with("_KeyShift") && (1..=8).contains(&n) {
                 KeyShiftPad(n - 1)
             } else if f.ends_with("_KeyShift+Shift") && (1..=8).contains(&n) {
@@ -349,6 +399,14 @@ pub struct Controller {
     fx_on: bool,
     fx_kind: BeatFxKind,
     sync_master: Option<usize>,
+    cue: [bool; DECKS],
+    master_cue: bool,
+    cue_link: bool,
+    browser: Option<Browser>,
+    browser_changed: bool,
+    loaded: [Option<PathBuf>; DECKS],
+    pending_loads: Vec<(usize, PathBuf)>,
+    last_load: [f64; DECKS],
     tap: TapTempo,
     /// Time of the message being handled (seconds).
     now: f64,
@@ -364,6 +422,14 @@ impl Controller {
             fx_on: false,
             fx_kind: BeatFxKind::Delay,
             sync_master: None,
+            cue: [false; DECKS],
+            master_cue: false,
+            cue_link: false,
+            browser: None,
+            browser_changed: false,
+            loaded: Default::default(),
+            pending_loads: Vec::new(),
+            last_load: [f64::NEG_INFINITY; DECKS],
             tap: TapTempo::default(),
             now: 0.0,
             config: ControllerConfig::default(),
@@ -377,6 +443,42 @@ impl Controller {
     /// Active pad mode of a deck (0-based).
     pub fn pad_mode(&self, deck: usize) -> PadMode {
         self.decks[deck].pad_mode
+    }
+
+    /// Start the file browser at `root` (BROWSE / LOAD / TRACK controls need it).
+    pub fn set_browser_root(&mut self, root: PathBuf) {
+        self.browser = Some(Browser::new(root));
+        self.browser_changed = true;
+    }
+
+    pub fn browser(&self) -> Option<&Browser> {
+        self.browser.as_ref()
+    }
+
+    /// True once after the browser view or selection changed.
+    pub fn take_browser_changed(&mut self) -> bool {
+        std::mem::take(&mut self.browser_changed)
+    }
+
+    /// Loads requested by LOAD / TRACK ◀▶: the host decodes the file and sends `Command::Load`.
+    pub fn take_loads(&mut self) -> Vec<(usize, PathBuf)> {
+        std::mem::take(&mut self.pending_loads)
+    }
+
+    /// Tell the controller which file a deck holds (for TRACK ◀▶ after a load from elsewhere).
+    pub fn set_loaded_path(&mut self, deck: usize, path: &Path) {
+        if deck < DECKS {
+            self.loaded[deck] = Some(path.to_path_buf());
+        }
+    }
+
+    pub fn loaded_path(&self, deck: usize) -> Option<&Path> {
+        self.loaded.get(deck)?.as_deref()
+    }
+
+    fn request_load(&mut self, deck: usize, path: PathBuf) {
+        self.loaded[deck] = Some(path.clone());
+        self.pending_loads.push((deck, path));
     }
 
     /// TIME MODE: true = remaining time is shown.
@@ -483,6 +585,72 @@ impl Controller {
             (Target::Eq(band), _, Some(v)) => vec![C::Eq(d, band, v as f32)],
             (Target::ColorKnob(_), _, Some(v)) => vec![C::ColorKnob(d, v as f32)],
             (Target::ColorSub, _, Some(v)) => vec![C::ColorSub(v as f32)],
+            (Target::SamplerStart(n), Some(true), _) => vec![C::SamplerStart(d * 8 + n)],
+            (Target::SamplerStop(n), Some(true), _) => vec![C::SamplerStop(d * 8 + n)],
+            (Target::SamplerVolume, _, Some(v)) => vec![C::SamplerVolume(v as f32)],
+            (Target::HeadphoneCue, Some(true), _) => {
+                let on = !self.cue[d];
+                if on && self.cue_link {
+                    self.cue = [false; DECKS];
+                }
+                self.cue[d] = on;
+                vec![C::HeadphoneCue(d, on)]
+            }
+            (Target::MasterCue, Some(true), _) => {
+                self.master_cue = !self.master_cue;
+                vec![C::MasterCue(self.master_cue)]
+            }
+            (Target::CueLink, Some(true), _) => {
+                self.cue_link = !self.cue_link;
+                vec![C::CueLink(self.cue_link)]
+            }
+            (Target::CrossfaderCurve, _, Some(v)) => vec![C::CrossfaderCurve(v as f32)],
+            (Target::Browse | Target::Zoom, _, _) => {
+                if let (Some(b), Action::Relative { delta }) = (self.browser.as_mut(), action) {
+                    if t == Target::Browse {
+                        b.scroll(delta);
+                    } else {
+                        b.zoom(delta.signum());
+                    }
+                    self.browser_changed = true;
+                }
+                vec![]
+            }
+            (Target::BrowseEnter | Target::Back | Target::TagView | Target::Tag | Target::Related, Some(true), _) => {
+                if let Some(b) = self.browser.as_mut() {
+                    match t {
+                        Target::BrowseEnter => {
+                            b.enter();
+                        }
+                        Target::Back => b.back(),
+                        Target::TagView => b.toggle_tag_view(),
+                        Target::Tag => b.toggle_tag(),
+                        _ => b.show_related(),
+                    }
+                    self.browser_changed = true;
+                }
+                vec![]
+            }
+            (Target::Load, Some(true), _) => {
+                // a second press within 0.4 s doubles the other deck instead
+                if self.now - self.last_load[d] < 0.4 {
+                    self.last_load[d] = f64::NEG_INFINITY;
+                    self.pending_loads.retain(|(deck, _)| *deck != d);
+                    self.loaded[d] = self.loaded[1 - d].clone();
+                    return vec![C::InstantDouble(d)];
+                }
+                self.last_load[d] = self.now;
+                if let Some(p) = self.browser.as_ref().and_then(|b| b.selected_track()) {
+                    self.request_load(d, p);
+                }
+                vec![]
+            }
+            (Target::TrackStep(fwd), Some(true), _) => {
+                if let Some(next) = self.loaded[d].as_deref().and_then(|p| Browser::neighbour(p, fwd)) {
+                    self.request_load(d, next);
+                }
+                vec![]
+            }
             (Target::Reverse, Some(true), _) => {
                 ctl.reverse = !ctl.reverse;
                 vec![C::Reverse(d, ctl.reverse)]
@@ -618,6 +786,8 @@ impl Controller {
                     Target::Vinyl => self.decks[d].vinyl,
                     Target::PadFx(bank, slot) => s.pad_fx[d] == Some((bank, slot)),
                     Target::Reverse => st.reverse,
+                    Target::SamplerStart(n) => s.sampler_playing & (1 << (d * 8 + n)) != 0,
+                    Target::HeadphoneCue => s.cue[d],
                     Target::Slip => st.slip,
                     Target::SlipFlash => st.slip_diverged,
                     Target::MasterTempo => st.master_tempo,

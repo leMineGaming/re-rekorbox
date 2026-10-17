@@ -3,6 +3,7 @@
 //! The [`Mixer`] lives inside the audio callback. Other threads send [`Command`]s through
 //! [`Output::send`] and read the latest [`MixerState`] with [`Output::state`]. Audio files must be
 //! decoded before they are sent (`Command::Load` carries the decoded [`crate::pcm::Pcm`]).
+//! Devices with four or more output channels get the headphone cue on channels 3/4.
 
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -50,11 +51,11 @@ impl Output {
         let state = Arc::new(Mutex::new(MixerState::default()));
         let mut mixer = Mixer::new(sample_rate);
         let shared = state.clone();
-        let fill = move |buf: &mut [Frame]| {
+        let fill = move |buf: &mut [Frame], cue: &mut [Frame]| {
             for cmd in rx.try_iter() {
                 mixer.apply(cmd);
             }
-            mixer.render(buf);
+            mixer.render_with_cue(buf, cue);
             if let Ok(mut s) = shared.try_lock() {
                 *s = mixer.state();
             }
@@ -93,7 +94,7 @@ impl Output {
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    mut fill: impl FnMut(&mut [Frame]) + Send + 'static,
+    mut fill: impl FnMut(&mut [Frame], &mut [Frame]) + Send + 'static,
     err: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream, String>
 where
@@ -101,20 +102,24 @@ where
 {
     let channels = usize::from(config.channels);
     let mut frames: Vec<Frame> = Vec::with_capacity(8192);
+    let mut cue: Vec<Frame> = Vec::with_capacity(8192);
     device
         .build_output_stream(
             config,
             move |data: &mut [T], _| {
-                frames.resize(data.len() / channels.max(1), [0.0; 2]);
-                fill(&mut frames);
-                for (out, f) in data.chunks_mut(channels).zip(&frames) {
+                let n = data.len() / channels.max(1);
+                frames.resize(n, [0.0; 2]);
+                cue.resize(n, [0.0; 2]);
+                fill(&mut frames, &mut cue);
+                for ((out, f), c) in data.chunks_mut(channels).zip(&frames).zip(&cue) {
                     match out.len() {
                         1 => out[0] = T::from_sample(0.5 * (f[0] + f[1])),
                         _ => {
                             out[0] = T::from_sample(f[0]);
                             out[1] = T::from_sample(f[1]);
-                            for s in &mut out[2..] {
-                                *s = T::from_sample(0.0);
+                            for (i, s) in out[2..].iter_mut().enumerate() {
+                                // channels 3/4: headphone cue
+                                *s = T::from_sample(if i < 2 { c[i] } else { 0.0 });
                             }
                         }
                     }

@@ -9,6 +9,7 @@ use crate::deck::{Deck, DeckState, Grid};
 use crate::dsp::{ColorFx, ColorProcessor, Eq3, Smooth};
 use crate::fx::{BeatFx, BeatFxKind, FxAssign, PAD_FX};
 use crate::pcm::{Frame, Pcm};
+use crate::sampler::Sampler;
 
 /// Number of decks.
 pub const DECKS: usize = 2;
@@ -77,6 +78,19 @@ pub enum Command {
     InstantDouble(usize),
     /// Sync master deck (`None` = automatic: the other deck).
     SetMaster(Option<usize>),
+    SamplerLoad(usize, Arc<Pcm>),
+    SamplerStart(usize),
+    SamplerStop(usize),
+    /// Sampler volume 0..1.
+    SamplerVolume(f32),
+    /// Headphone CUE of a channel.
+    HeadphoneCue(usize, bool),
+    /// Master signal into the headphones.
+    MasterCue(bool),
+    /// Cue link: only one channel cue at a time.
+    CueLink(bool),
+    /// Crossfader curve 0 (smooth) .. 1 (sharp cut).
+    CrossfaderCurve(f32),
     BeatFxOn(bool),
     BeatFxSelect(BeatFxKind),
     /// Beat FX knob 0..1.
@@ -113,6 +127,9 @@ impl Command {
             MemoryStore(d) | MemoryCall(d, _) | MemoryDelete(d) | AutoCue(d, _) | Search(d, _) => Some(*d),
             KeyboardPress(d, _) | KeyboardRelease(d) | InstantDouble(d) => Some(*d),
             SetMaster(_) => None,
+            HeadphoneCue(d, _) => Some(*d),
+            SamplerLoad(..) | SamplerStart(_) | SamplerStop(_) | SamplerVolume(_) | MasterCue(_) | CueLink(_)
+            | CrossfaderCurve(_) => None,
             ColorFxSelect(_) | ColorSub(_) | Crossfader(_) | MasterGain(_) => None,
             BeatFxOn(_) | BeatFxSelect(_) | BeatFxDepth(_) | BeatFxBeat(_) | BeatFxAdjust(_) | BeatFxAssign(_)
             | BeatFxBpm(_) => None,
@@ -136,6 +153,12 @@ pub struct MixerState {
     pub pad_fx: [Option<(usize, usize)>; DECKS],
     /// Sync master deck chosen with MASTER (`None` = automatic).
     pub master: Option<usize>,
+    pub sampler_loaded: u16,
+    pub sampler_playing: u16,
+    pub cue: [bool; DECKS],
+    pub master_cue: bool,
+    pub cue_link: bool,
+    pub crossfader_curve: f32,
 }
 
 /// Beat FX section for display / LEDs.
@@ -172,7 +195,13 @@ pub struct Mixer {
     fx_bpm: Option<f64>,
     pad_fx: [Option<(usize, usize)>; DECKS],
     sync_master: Option<usize>,
+    pub sampler: Sampler,
+    cue: [bool; DECKS],
+    master_cue: bool,
+    cue_link: bool,
+    xf_curve: f32,
     scratch: Vec<Frame>,
+    cue_buf: Vec<Frame>,
 }
 
 /// Channel strip after the deck: trim → EQ → Sound Color FX → channel fader × crossfader.
@@ -201,8 +230,20 @@ impl Channel {
 
 /// Constant-power crossfader gains for (deck 1, deck 2) at position −1..1.
 pub fn crossfader_gains(x: f32) -> (f32, f32) {
-    let a = (x.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
-    (a.cos(), a.sin())
+    crossfader_gains_curve(x, 0.0)
+}
+
+/// Crossfader gains with a curve: 0 = smooth constant power, 1 = sharp (full level until the last
+/// 5 % of the travel).
+pub fn crossfader_gains_curve(x: f32, curve: f32) -> (f32, f32) {
+    let t = (x.clamp(-1.0, 1.0) + 1.0) * 0.5;
+    let a = t * 0.5 * std::f32::consts::PI;
+    let (s1, s2) = (a.cos(), a.sin());
+    const W: f32 = 0.05;
+    let sharp1 = ((1.0 - t) / W).min(1.0);
+    let sharp2 = (t / W).min(1.0);
+    let c = curve.clamp(0.0, 1.0);
+    (s1 + (sharp1 - s1) * c, s2 + (sharp2 - s2) * c)
 }
 
 impl Mixer {
@@ -221,7 +262,13 @@ impl Mixer {
             fx_bpm: None,
             pad_fx: [None; DECKS],
             sync_master: None,
+            sampler: Sampler::default(),
+            cue: [false; DECKS],
+            master_cue: false,
+            cue_link: false,
+            xf_curve: 0.0,
             scratch: Vec::new(),
+            cue_buf: Vec::new(),
         }
     }
 
@@ -243,6 +290,12 @@ impl Mixer {
             },
             pad_fx: self.pad_fx,
             master: self.sync_master,
+            sampler_loaded: (0..crate::sampler::SLOTS).filter(|&i| self.sampler.is_loaded(i)).fold(0, |m, i| m | 1 << i),
+            sampler_playing: self.sampler.playing_mask(),
+            cue: self.cue,
+            master_cue: self.master_cue,
+            cue_link: self.cue_link,
+            crossfader_curve: self.xf_curve,
         }
     }
 
@@ -312,6 +365,19 @@ impl Mixer {
                 self.decks[d].copy_from(&other);
             }
             SetMaster(m) => self.sync_master = m.filter(|&m| m < DECKS),
+            SamplerLoad(slot, pcm) => self.sampler.load(slot, pcm),
+            SamplerStart(slot) => self.sampler.start(slot),
+            SamplerStop(slot) => self.sampler.stop(slot),
+            SamplerVolume(v) => self.sampler.volume = v.clamp(0.0, 1.0),
+            HeadphoneCue(d, on) => {
+                if on && self.cue_link {
+                    self.cue = [false; DECKS];
+                }
+                self.cue[d] = on;
+            }
+            MasterCue(on) => self.master_cue = on,
+            CueLink(on) => self.cue_link = on,
+            CrossfaderCurve(c) => self.xf_curve = c.clamp(0.0, 1.0),
             BeatFxOn(on) => self.beat_fx.on = on,
             BeatFxSelect(k) => {
                 if k != self.beat_fx.kind {
@@ -371,7 +437,7 @@ impl Mixer {
 
     /// The playing deck that is loudest in the mix (fader × crossfader), if any.
     pub fn master_deck(&self) -> Option<usize> {
-        let (g1, g2) = crossfader_gains(self.crossfader);
+        let (g1, g2) = crossfader_gains_curve(self.crossfader, self.xf_curve);
         let xf = [g1, g2];
         (0..DECKS)
             .filter(|&d| self.decks[d].is_playing())
@@ -405,10 +471,20 @@ impl Mixer {
         }
     }
 
-    /// Render the next `out.len()` frames.
+    /// Render the next `out.len()` frames (master only).
     pub fn render(&mut self, out: &mut [Frame]) {
+        let mut cue = std::mem::take(&mut self.cue_buf);
+        cue.resize(out.len(), [0.0; 2]);
+        self.render_with_cue(out, &mut cue);
+        self.cue_buf = cue;
+    }
+
+    /// Render master and headphone cue (pre-fader channels with CUE on, plus master with MASTER
+    /// CUE) into two buffers of equal length.
+    pub fn render_with_cue(&mut self, out: &mut [Frame], cue_out: &mut [Frame]) {
         out.fill([0.0; 2]);
-        let (g1, g2) = crossfader_gains(self.crossfader);
+        cue_out.fill([0.0; 2]);
+        let (g1, g2) = crossfader_gains_curve(self.crossfader, self.xf_curve);
         let xf = [g1, g2];
         let mut buf = std::mem::take(&mut self.scratch);
         buf.resize(out.len(), [0.0; 2]);
@@ -422,7 +498,7 @@ impl Mixer {
             let target = deck.volume * xf[i];
             let trim = deck.trim;
             let mut peak = 0.0f32;
-            for (o, b) in out.iter_mut().zip(&buf) {
+            for (k, (o, b)) in out.iter_mut().zip(&buf).enumerate() {
                 let mut x = [b[0] * trim, b[1] * trim];
                 if !ch.eq.is_flat() {
                     x = ch.eq.process(x);
@@ -434,6 +510,11 @@ impl Mixer {
                 if self.fx_assign == FxAssign::Channel(i) {
                     x = self.beat_fx.process(x, fx_bpm);
                 }
+                if self.cue[i] {
+                    let c = &mut cue_out[k];
+                    c[0] += x[0];
+                    c[1] += x[1];
+                }
                 let g = ch.gain.next(target);
                 let y = [x[0] * g, x[1] * g];
                 peak = peak.max(y[0].abs()).max(y[1].abs());
@@ -443,6 +524,17 @@ impl Mixer {
             ch.peak = peak;
         }
         self.scratch = buf;
+        // sampler bus (not affected by the crossfader)
+        let mut sbuf = std::mem::take(&mut self.scratch);
+        sbuf.resize(out.len(), [0.0; 2]);
+        sbuf.fill([0.0; 2]);
+        self.sampler.render(&mut sbuf, self.sample_rate);
+        for (o, s) in out.iter_mut().zip(&sbuf) {
+            let y = if self.fx_assign == FxAssign::Sampler { self.beat_fx.process(*s, fx_bpm) } else { *s };
+            o[0] += y[0];
+            o[1] += y[1];
+        }
+        self.scratch = sbuf;
         if self.fx_assign == FxAssign::Master {
             for o in out.iter_mut() {
                 *o = self.beat_fx.process(*o, fx_bpm);
@@ -456,6 +548,14 @@ impl Mixer {
             }
         }
         self.peak = peak;
+        for (c, o) in cue_out.iter_mut().zip(out.iter()) {
+            if self.master_cue {
+                c[0] += o[0];
+                c[1] += o[1];
+            }
+            c[0] = soft_clip(c[0]);
+            c[1] = soft_clip(c[1]);
+        }
     }
 
     /// Render `seconds` of output into a new buffer (offline, e.g. for tests or `--render`).

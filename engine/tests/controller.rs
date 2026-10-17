@@ -66,6 +66,23 @@ JogTouch,JogTouch+Shift,JogTouch,9048,0,1,2,3,,,,,,RO,\n\
 SlipStateForFlashing,SlipStateForFlashing,Indicator,,,,,,,9B24,9B25,9B26,9B27,RO,\n\
 LoadedIndicator,LoadedIndicator,Indicator,,,,,,,9B00,9B01,9B02,9B03,RO,\n\
 ChannelLevel,ChannelLevel,Indicator,,,,,,B002,0,1,2,3,RO,\n\
+PAD1_Sampler,PAD1.Sampler.Start,Pad,9070,5,6,7,8,9070,5,6,7,8,Fast,\n\
+PAD1_Sampler+Shift,PAD1.Sampler.Stop,Pad,9078,5,6,7,8,9078,5,6,7,8,Fast,\n\
+SamplerVolume,AuxTrim,KnobSlider,B47A,,,,,,,,,,,\n\
+HeadphoneCue,HeadphoneCue,Button,,B446,B447,B448,B449,,B446,B447,B448,B449,,\n\
+MasterCue,MasterCue,Button,B44A,,,,,,,,,,,\n\
+LinkCue,LinkCue,Button,B44B,,,,,,,,,,,\n\
+CrossFaderCurve,CrossFaderCurve,KnobSlider,B45F,,,,,,,,,,,\n\
+Browse,Browse,Rotary,B04F,,,,,,,,,,,\n\
+Zoom,Browse+Shift,Rotary,B060,,,,,,,,,,,\n\
+Forward,Browse+Press,Button,9033,,,,,,,,,,,\n\
+Back,Back,Button,9032,,,,,,,,,,,\n\
+Area,Back+Shift,Button,905F,,,,,,,,,,,\n\
+AddToTagList,AddToTagList,Button,9030,,,,,,,,,,,\n\
+RelatedTracks,AddToTagList+Shift,Button,9062,,,,,,,,,,,\n\
+TrackFilter,TrackFilter,Button,9031,,,,,,,,,,,\n\
+Load,Load,Button,9051,0,1,2,3,,,,,,,\n\
+TrackNext,TrackNext,Button,9004,0,1,2,3,,,,,,,\n\
 PAD9_PadFx2,,Pad,9068,5,6,7,8,9068,5,6,7,8,Fast,\n\
 PAD1_HotCue,PAD1.HotCue.Call,Pad,9000,5,6,7,8,9000,5,6,7,8,Fast,\n\
 PAD2_HotCue,PAD2.HotCue.Call,Pad,9001,5,6,7,8,9001,5,6,7,8,Fast,\n\
@@ -327,4 +344,60 @@ fn deck_modes_memory_and_indicators() {
     let (yes, no) = r.ctl.coverage();
     assert!(yes.contains("JogTouch+Shift") && yes.contains("Sync+LongPress"));
     assert!(no.is_empty(), "every input row of the test mapping is handled: {no:?}");
+}
+
+#[test]
+fn sampler_cue_and_browser_controls() {
+    let mut r = Rig::new();
+    // sampler pads: deck 1 pads = slots 1..8, deck 2 pads = slots 9..16
+    assert_eq!(r.midi(&[0x95, 0x70, 0x7F]), ["SamplerStart(0)"]);
+    assert_eq!(r.midi(&[0x96, 0x70, 0x7F]), ["SamplerStart(8)"]);
+    assert_eq!(r.midi(&[0x95, 0x78, 0x7F]), ["SamplerStop(0)"]);
+    assert_eq!(r.midi(&[0xB4, 0x7A, 0x00]), ["SamplerVolume(0.0)"]);
+    assert_eq!(r.midi(&[0xB4, 0x46, 0x7F]), ["HeadphoneCue(0, true)"], "deck column = full message");
+    assert_eq!(r.midi(&[0xB4, 0x4B, 0x7F]), ["CueLink(true)"]);
+    assert_eq!(r.midi(&[0xB4, 0x47, 0x7F]), ["HeadphoneCue(1, true)"]);
+    assert_eq!(r.mixer.state().cue, [false, true], "cue link keeps one channel");
+    assert_eq!(r.midi(&[0xB4, 0x4A, 0x7F]), ["MasterCue(true)"]);
+    assert_eq!(r.midi(&[0xB4, 0x5F, 0x7F]), ["CrossfaderCurve(1.0)"]);
+    let leds = r.ctl.leds(&r.mixer.state());
+    assert_eq!(leds.iter().find(|l| l.status == 0xB4 && l.data1 == 0x47).map(|l| l.value), Some(0x7F), "cue LED deck 2");
+
+    // browser on a temporary folder
+    let root = std::env::temp_dir().join(format!("rbx-ctl-browser-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("Set")).unwrap();
+    let tone = Pcm::sine(SR, 440.0, 0.1, 0.3);
+    for f in ["Set/A - 1.wav", "Set/A - 2.wav", "Set/B - 3.wav"] {
+        rbx_engine::pcm::write_wav(&root.join(f), &tone).unwrap();
+    }
+    r.ctl.set_browser_root(root.clone());
+    assert!(r.ctl.take_browser_changed());
+    assert!(r.midi(&[0x90, 0x33, 0x7F]).is_empty(), "press: open folder 'Set'");
+    assert!(r.ctl.take_browser_changed());
+    r.midi(&[0xB0, 0x4F, 0x01]); // browse one down -> "A - 2.wav"
+    assert!(r.midi(&[0x91, 0x51, 0x7F]).is_empty(), "load to deck 2 is a host request");
+    let loads = r.ctl.take_loads();
+    assert_eq!(loads.len(), 1);
+    assert_eq!((loads[0].0, loads[0].1.file_name().unwrap().to_str().unwrap()), (1, "A - 2.wav"));
+    // double press within 0.4 s: instant double instead of a load
+    let at = |t: f64, b: &[u8], r: &mut Rig| r.ctl.handle(&MidiMessage::from_bytes(b, t).unwrap());
+    assert!(at(5.0, &[0x90, 0x51, 0x7F], &mut r).is_empty());
+    assert_eq!(format!("{:?}", at(5.2, &[0x90, 0x51, 0x7F], &mut r)), "[InstantDouble(0)]");
+    assert!(r.ctl.take_loads().iter().all(|(d, _)| *d != 0), "the pending single load was dropped");
+    // track next on deck 2: "A - 2" -> "B - 3"
+    r.midi(&[0x91, 0x04, 0x7F]);
+    assert_eq!(r.ctl.take_loads()[0].1.file_name().unwrap(), "B - 3.wav");
+    // tag list, related, zoom
+    r.midi(&[0x90, 0x30, 0x7F]); // tag the selected track
+    assert_eq!(r.ctl.browser().unwrap().tags.len(), 1);
+    r.midi(&[0x90, 0x31, 0x7F]); // track filter -> tag list
+    assert_eq!(r.ctl.browser().unwrap().entries().len(), 1);
+    r.midi(&[0x90, 0x32, 0x7F]); // back to folders
+    r.midi(&[0x90, 0x33, 0x7F]);
+    r.midi(&[0x90, 0x62, 0x7F]); // related: same artist as "A - 1"
+    assert_eq!(r.ctl.browser().unwrap().entries().len(), 1);
+    r.midi(&[0xB0, 0x60, 0x01]);
+    assert_eq!(r.ctl.browser().unwrap().zoom, 5);
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -10,6 +10,8 @@
 //! `play` options: `--device NAME` (audio output), `--midi MAPPING.csv` (controller; MIDI in/out are
 //! found by the mapping's device name, override with `--midi-in NAME` / `--midi-out NAME`). With a
 //! mapping loaded, `midi B0 22 41` on stdin injects a message as if the controller had sent it.
+//! `--samples DIR` fills the sampler from a folder (else built-in sounds), `--browse DIR` sets the
+//! browser root for BROWSE/LOAD (default: the user's Music folder).
 //! Sources: an audio file path, `tone` (440 Hz sine) or `click:BPM` (click track) – the latter two
 //! allow testing without music files.
 
@@ -130,10 +132,19 @@ fn play(rest: &[&str]) -> Result<(), String> {
         let (pcm, grid) = source(s, out.sample_rate)?;
         out.send(Command::Load { deck: d, pcm, grid });
     }
+    fill_sampler(&out, opts.iter().find(|(k, _)| *k == "samples").map(|(_, v)| Path::new(*v)));
     let ctl = match opts.iter().find(|(k, _)| *k == "midi") {
         Some((_, m)) => Some(start_controller(m, &opts, &out)?),
         None => None,
     };
+    if let Some(c) = &ctl {
+        let mut c = c.controller.lock().unwrap();
+        for (d, s) in sources.iter().take(2).enumerate() {
+            if Path::new(s).is_file() {
+                c.set_loaded_path(d, Path::new(s));
+            }
+        }
+    }
     println!("commands: play 1, cue 1, hot 1 1, loop 1 4, tempo 1 0.2, sync 2, xf 0, load 2 <file>, midi 90 00 7F, state, quit");
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|e| e.to_string())?;
@@ -142,6 +153,13 @@ fn play(rest: &[&str]) -> Result<(), String> {
             "" => continue,
             "quit" | "q" | "exit" => break,
             "state" | "s" => print_state(&out),
+            "browse" => match &ctl {
+                Some(c) => match c.controller.lock().unwrap().browser() {
+                    Some(b) => println!("{}", b.describe()),
+                    None => println!("no browser"),
+                },
+                None => eprintln!("start with --midi <mapping.csv>"),
+            },
             l if l.starts_with("midi ") => match (&ctl, parse_hex(&l[5..])) {
                 (Some(c), Ok(bytes)) => match rekordbox_formats::midi_input::MidiMessage::from_bytes(&bytes, 0.0) {
                     Some(msg) => {
@@ -150,6 +168,7 @@ fn play(rest: &[&str]) -> Result<(), String> {
                         for cmd in cmds {
                             out.send(cmd);
                         }
+                        side_effects(&c.controller, &out.sender(), out.sample_rate);
                     }
                     None => eprintln!("first byte must be a status byte"),
                 },
@@ -161,7 +180,12 @@ fn play(rest: &[&str]) -> Result<(), String> {
                 let d = p.next().and_then(|d| d.parse::<usize>().ok()).filter(|d| (1..=2).contains(d));
                 match (d, p.next()) {
                     (Some(d), Some(f)) => match source(f.trim().trim_matches('"'), out.sample_rate) {
-                        Ok((pcm, grid)) => out.send(Command::Load { deck: d - 1, pcm, grid }),
+                        Ok((pcm, grid)) => {
+                            out.send(Command::Load { deck: d - 1, pcm, grid });
+                            if let Some(c) = &ctl {
+                                c.controller.lock().unwrap().set_loaded_path(d - 1, Path::new(f.trim().trim_matches('"')));
+                            }
+                        }
                         Err(e) => eprintln!("{e}"),
                     },
                     _ => eprintln!("load <deck> <file>"),
@@ -183,6 +207,49 @@ fn tone(seconds: f64) -> Result<(), String> {
     out.send(Command::Play(0));
     std::thread::sleep(Duration::from_secs_f64(seconds));
     Ok(())
+}
+
+/// Fill the 16 sampler slots: audio files of `dir`, the rest with the built-in sounds.
+fn fill_sampler(out: &Output, dir: Option<&Path>) {
+    use rbx_engine::sampler::{builtin_sounds, load_folder, BUILTIN_NAMES};
+    let files = dir.map(load_folder).unwrap_or_default();
+    let builtin = builtin_sounds(out.sample_rate);
+    let mut names = Vec::new();
+    for (slot, b) in builtin.into_iter().enumerate() {
+        match files.get(slot) {
+            Some((p, pcm)) => {
+                names.push(p.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+                out.send(Command::SamplerLoad(slot, Arc::new(pcm.clone())));
+            }
+            None => {
+                names.push(BUILTIN_NAMES[slot].to_string());
+                out.send(Command::SamplerLoad(slot, Arc::new(b)));
+            }
+        }
+    }
+    println!("sampler: {}", names.join(", "));
+}
+
+/// Loads requested by the controller (decoded on a worker thread) and browser display updates.
+fn side_effects(c: &Arc<std::sync::Mutex<Controller>>, tx: &std::sync::mpsc::Sender<Command>, sample_rate: u32) {
+    let (loads, browser) = {
+        let mut g = c.lock().unwrap();
+        let changed = g.take_browser_changed();
+        (g.take_loads(), if changed { g.browser().map(|b| b.describe()) } else { None })
+    };
+    if let Some(text) = browser {
+        println!("{text}");
+    }
+    for (deck, path) in loads {
+        let tx = tx.clone();
+        std::thread::spawn(move || match source(&path.to_string_lossy(), sample_rate) {
+            Ok((pcm, grid)) => {
+                println!("deck {}: {}", deck + 1, path.display());
+                let _ = tx.send(Command::Load { deck, pcm, grid });
+            }
+            Err(e) => eprintln!("{e}"),
+        });
+    }
 }
 
 fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
@@ -229,6 +296,17 @@ fn start_controller(mapping: &str, opts: &[(&str, &str)], out: &Output) -> Resul
     let m = load_mapping(Path::new(mapping))?;
     let device = m.device.clone();
     let controller = Arc::new(std::sync::Mutex::new(Controller::new(m)));
+    let root = opts
+        .iter()
+        .find(|(k, _)| *k == "browse")
+        .map(|(_, v)| std::path::PathBuf::from(v))
+        .or_else(|| std::env::var_os("USERPROFILE").map(|h| Path::new(&h).join("Music")))
+        .filter(|p| p.is_dir());
+    if let Some(r) = root {
+        println!("browser: {}", r.display());
+        controller.lock().unwrap().set_browser_root(r);
+        controller.lock().unwrap().take_browser_changed();
+    }
     let (yes, no) = controller.lock().unwrap().coverage();
     println!("controller {device:?}: {} functions handled, {} not (see midi-coverage)", yes.len(), no.len());
     #[cfg(windows)]
@@ -244,13 +322,15 @@ fn start_controller(mapping: &str, opts: &[(&str, &str)], out: &Output) -> Resul
             Some(d) => {
                 let (port, rx) = InputPort::open(d.index)?;
                 println!("MIDI in: {}", d.name);
-                let (c, tx) = (controller.clone(), out.sender());
+                let (c, tx, sr) = (controller.clone(), out.sender(), out.sample_rate);
                 std::thread::spawn(move || {
                     for (packed, ms) in rx {
                         if let Some(msg) = MidiMessage::from_packed(packed, f64::from(ms) / 1000.0) {
-                            for cmd in c.lock().unwrap().handle(&msg) {
+                            let cmds = c.lock().unwrap().handle(&msg);
+                            for cmd in cmds {
                                 let _ = tx.send(cmd);
                             }
+                            side_effects(&c, &tx, sr);
                         }
                     }
                 });
