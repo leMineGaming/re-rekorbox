@@ -115,6 +115,17 @@ werden gefunden. rekordbox darf dabei nicht laufen (gleiche Ports).
 **Nur über Loopback getestet**; Verhalten gegenüber echten Geräten (Annahme der Nummer, Anzeige am XDJ-RX3) ist
 offen (SPEC U28–U31).
 
+## XDJ-RX3: eingebautes Mapping und MIDI-Tests
+
+`mappings/XDJ-RX3.csv` (erzeugt mit `packaging/make_xdj_rx3_mapping.py` aus der MIDI-Belegung des Geräts, ohne
+Kommentartexte) ist im Programm eingebettet; `session::detect_controller()` findet ein angeschlossenes Gerät,
+`rbx-play play --midi auto` nutzt es. Im externen Browser-Modus (`Controller::set_external_browser`) werden
+BROWSE/LOAD/BACK/TAG/TRACK zu `BrowseEvent`s für die Oberfläche. Für Tests: MIDI-Monitor, gesehene
+Bedienelemente, unbekannte Nachrichten, Aufnahme (`.midilog`, `parse_midilog`) und `replay`, LED-Liste.
+`tests/controller_rx3.rs` bedient jedes Element des Mappings synthetisch (auch 14-Bit-Fader) und prüft
+Browse-Ereignisse, LEDs, unbekannte Nachrichten und Aufnahme/Wiedergabe. `rbx-selftest --leds --midi-listen 90`
+macht dasselbe am echten Gerät, `--midi-replay DATEI` spielt eine Aufnahme gegen Controller und Mixer.
+
 ## Automatische Audio-Prüfung und Selbsttest
 
 `quality` rendert typische Bedienabläufe offline und vermisst das Ergebnis (statt zuzuhören): Knackser bei

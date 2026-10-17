@@ -26,13 +26,33 @@ Erster Start
    - Audio: Ausgabegerät und Puffer wählen (dann "Jetzt neu starten").
      Geräte mit 4 Kanälen bekommen den Kopfhörer-Cue auf Kanal 3/4.
    - Bibliothek: anderer Musik-Ordner -> "Einlesen".
-   - Controller: Pfad zur Mapping-Datei, z. B.
-     C:\Program Files\rekordbox\rekordbox 7.2.19\MidiMappings\XDJ-RX3.midi.csv
-     -> "Verbinden". rekordbox muss dafür geschlossen sein.
+   - Controller: Das XDJ-RX3 wird beim Anstecken automatisch erkannt und mit dem
+     eingebauten Mapping verbunden (rekordbox muss geschlossen sein). Für andere
+     Controller: Pfad zu einer Mapping-Datei (.midi.csv) -> "Verbinden".
    - Pro DJ Link: "Beitreten" (rekordbox muss geschlossen sein).
    Alle Einstellungen werden gespeichert.
 3. Tracks ohne Analyse werden beim Laden automatisch analysiert; alle auf einmal mit
    "Fehlende analysieren" über der Trackliste.
+
+XDJ-RX3 als Controller
+----------------------
+1. XDJ-RX3 per USB (Buchse "PC" auf der Rückseite) anschließen; der XDJ-RX3-Treiber von
+   Pioneer DJ muss installiert sein (liegt rekordbox bei bzw. unter pioneerdj.com).
+2. Am XDJ-RX3 den PC-/rekordbox-Modus wählen (Taste SOURCE bzw. Anzeige "PC").
+3. rekordbox-rs starten: oben erscheint "Controller: XDJ-RX3".
+Bedienung: alle Tasten, Regler, Fader, Pads, Jogs und Effekte steuern die Decks und den
+Mixer. BROWSE drehen = Track in der Liste wählen (die Auswahl scrollt mit), BROWSE drücken =
+in ein freies Deck laden, LOAD 1/2 = in Deck 1/2 laden, BACK = Tag-Liste verlassen / Suche
+löschen / an den Anfang, TAG TRACK = Track markieren, TRACK FILTER = Tag-Liste zeigen,
+TRACK < > = vorheriger/nächster Track im Deck. Die LEDs folgen dem Zustand.
+Die Wellenform erscheint im Controller-Modus auf dem PC-Bildschirm (das Pult-Display
+zeigt im PC-Modus keine Wellenform; dafür ist der Link-Export-Modus in Arbeit).
+
+Controller-Test: "Controller-Test.cmd" (oder in rbx-ui: Einstellungen > Selbsttest >
+Controller-Test, oder oben "Controller-Test"). Erst laufen alle LEDs nacheinander an, dann
+90 s lang alle Bedienelemente bewegen. Der Bericht zeigt, welche Elemente gesendet haben und
+welche Nachrichten das Mapping nicht kennt; die Aufnahme liegt in
+%APPDATA%\rekordbox-rs\midi\*.midilog. Bitte Bericht und Aufnahme schicken.
 
 Tasten: Deck 1: Z = CUE, X = PLAY, C = SYNC, 1-8 = Hot Cues
         Deck 2: B = CUE, N = PLAY, M = SYNC, Umschalt+1-8 = Hot Cues

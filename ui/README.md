@@ -34,6 +34,7 @@ sich nicht laden lässt) erscheinen 15 s rot in der oberen Leiste.
 | Mixer | Trim, 3-Band-EQ, COLOR, Kanalfader mit Pegel, Kopfhörer-CUE je Kanal und Master, Master-Pegel, Sampler-Lautstärke, Crossfader mit Kurve |
 | Effekte | Beat FX (14 Effekte, Beat-Raster, Zuweisung CH1/CH2/Master/Sampler, Depth, ON), Sound Color FX (6) |
 | Sampler | 16 Pads (Klick spielt, Rechtsklick stoppt) |
+| Controller | XDJ-RX3 wird beim Anstecken erkannt und mit dem eingebauten Mapping verbunden. BROWSE wählt in der Trackliste (Auswahl scrollt mit), BROWSE drücken / LOAD 1/2 laden, BACK, TAG TRACK, TRACK FILTER (Tag-Liste), TRACK ◀▶; alle Deck-, Mixer-, Pad- und Effekt-Bedienelemente und LEDs. Fenster **Controller-Test**: MIDI-Monitor, Fortschritt je Gruppe, unbekannte Nachrichten, LED-Lauflicht, Aufnahme (`.midilog`), Bericht |
 | Einstellungen | Audiogerät und Puffer (mit Anzeige von Latenz, Last, Aussetzern; „Jetzt neu starten“), Musik-Ordner, Analyse beim Laden an/aus, Controller-Mapping verbinden (z. B. `XDJ-RX3.midi.csv`), Pro DJ Link beitreten und Decks dem Tempo eines Geräts folgen lassen, **Selbsttest** (schnell, vollständig, mit Controller-Eingaben) |
 | Obere Leiste | Master-Pegel, Audio-Last in %, Aussetzer (rot), Bibliotheksstand, Analyse-Fortschritt, Controller und DJ Link, letzte Fehlermeldung |
 
@@ -45,7 +46,8 @@ Controller, DJ Link).
 `cargo test -p rbx-ui`: steuert das Fenster ohne Bildschirm über AccessKit (egui_kittest), mit stummer Engine und
 synthetischen Klick-Tracks in einem Temp-Ordner. Ablauf: Track in der Liste wählen → in Deck 1 laden →
 automatische Analyse (128 BPM) → PLAY → Hot Cue A → zweiten Track laden → SYNC (Deck 2 auf 128 BPM) → PAUSE;
-außerdem Suche, Tastaturkürzel und das Speichern der Einstellungen. Bildschirmfotos landen in `target/ui-shots/`.
+außerdem Suche, Tastaturkürzel, das Speichern der Einstellungen und Browsen/Laden/Taggen über simulierte
+XDJ-RX3-MIDI-Nachrichten. Bildschirmfotos landen in `target/ui-shots/`.
 `cargo test -p rbx-ui --test ui -- --ignored real_library` macht ein Bild mit der echten Bibliothek dieses
 Rechners (nur lesend).
 
