@@ -778,6 +778,55 @@ Weitere Typen auf 50002 (nur erkannt, nicht spezifiziert): 0x05, 0x10, 0x12, 0x1
 All-in-one-Gerät als ein Keep-alive-Teilnehmer (vermutlich Nummer 9 oder 11) mit zwei Decks (n, n + 1); der
 Mixer-Status 0x29 liefert dann beide Abspielzustände. Bestätigung nur per Mitschnitt am Gerät möglich (U30).
 
+## 5j. Track-Analyse (Dekompilat + Beobachtung)
+
+**Aufbau** [Strings/RTTI `analyzer::AnalyzeJob*`, `analyzer::AnalyzeJobController`]: eine Analyse besteht aus
+Jobs: `AnalyzeJobBeatDetector` (Beatgrid), `AnalyzeJobKey` (Tonart), `SongStructureAnalyze` (Phrasen),
+Cloud-Jobs (nicht betrachtet) sowie der Wellenform-Erzeugung `analyzer::WaveCreator`. Ergebnisse gehen in die
+ANLZ-Dateien (Schreiber: DAT GH:0x14126f190-Umfeld, EXT GH:0x14127b650, 2EX GH:0x1412779f0; Tag-Packer
+PWV3 GH:0x1412b9f10, PWV4 GH:0x1412ba580, PWV5 GH:0x1412bd6e0) und – Tonart, BPM, Phrasen-Makros – in die
+Datenbank.
+
+**Maschinelles Lernen** (nicht nachgebaut): `models/detect_beat/model7|model8` (TensorFlow SavedModel),
+`models/detect_cue_model/*.onnx`, `models/embed_model/*.onnx` (Energie, Genre, Ähnlichkeit). Die „hochpräzise“
+Beaterkennung (`highPrecisionBeatAnalyze`) nutzt ein neuronales Netz und Klassen aus **madmom**
+(`madmom::RNNDownBeatTrackingObservationModel`, `ObservationModel`) – also Beat-/Downbeat-Wahrscheinlichkeiten
+aus einem RNN und ein dynamisches Bayes-Netz (Balkenzeiger-Modell, öffentlich beschrieben bei Böck/Krebs).
+`legacyBeatAnalyze` [GH:0x14128f980] übernimmt fertige Beat-Datensätze (je 24 Byte in der Quelle, 12 Byte im
+Ergebnis) und eine BPM-Angabe (`float × Faktor + 0,5`) aus einem vorgelagerten Analyseobjekt (zwei Varianten,
+GH:0x142607360 / GH:0x142640950). Die Modelldateien und Gewichte werden **nicht** verwendet; die
+Reimplementierung nutzt eigene, öffentliche Verfahren (Abschnitt 8a).
+
+### Wellenform-DSP (`analyzer::WaveCreator`) [Konstruktor GH:0x141234530, Verarbeitung GH:0x1412359c0]
+
+- Abtastrate aus der Quelle, Vorgabe 44100. Länge in ms = ⌈Samples · 1000 / Rate⌉; Detailspalten =
+  round(Samples / Rate · **150**); Vorschau 1200 Einträge × 3 Byte (Vorgabe je Band 100, vgl. `PWVC`).
+- **Mono-Mischung** je Sample: l, r · (1/32767); ist ||r| − |l|| ≥ 0,001 → (l + r)/2, sonst einer der beiden
+  Kanäle (Auswahl per Vergleich der Beträge).
+- **Filterbank**: Biquads nach RBJ-Kochbuch, Q = 1/√2 (α = sin ω · 0,7071), ω = 2π f / Rate
+  (Konstanten 2π·f in der Tabelle hinter der vtable 0x1437d2b20):
+
+  | Gruppe | Filter | Ergebnis |
+  |---|---|---|
+  | einzeln | TP 400 Hz | „Bass“-Hüllkurve |
+  | A (Linkwitz-Riley 4. Ordnung = je 2 Biquads) | TP 200 ×2; HP 200 ×2 → TP 2000 ×2; HP 2000 ×2 | Bänder < 200, 200–2000, > 2000 Hz |
+  | B | TP 100; HP 300 → TP 3000; HP 1500 | < 100, 300–3000, > 1500 Hz |
+  | C | TP 300; HP 250 → TP 1200; HP 3000 → TP 9000 | < 300, 250–1200, 3000–9000 Hz |
+
+- **Datensätze je Millisekunde** (Fenster = Samples dieser ms), Werte i16 = Wert · 32768, ≥ 1 → 0x7FFF,
+  negative Grenze 0x8000:
+  - A (12 Byte): max(mono), min(mono), max|TP400|, und für die drei A-Bänder jeweils
+    max|Band| · (Anzahl Samples, in denen dieses Band das größte ist) / Fensterlänge.
+  - B (10 Byte): max(mono), min(mono), max|B1|, max|B2|, max|B3|.
+  - C (6 Byte): max|C1|, max|C2|, max|C3|.
+- **Spaltenbildung** [GH:0x141236eb0, GH:0x1412377a0, GH:0x1412381f0]: Zusammenfassung der ms-Datensätze zu
+  150 Spalten/s mit Spitzenwert-Halten und Rückblickfenstern (12, 13, 24 ms); Einzelheiten der Quantisierung
+  auf 5-Bit-Höhe / 3-Bit-Farbwerte sind nicht vollständig nachgezeichnet (U32) – die Reimplementierung
+  kalibriert diese Abbildung an beobachteten Ergebnissen (Abschnitt 8a).
+
+**Beobachtet** [OBS: 1831 lokale Analysen, Abschnitt 5a]: Beatgrids mit 2 Nachkommastellen BPM, Beat-im-Takt
+1–4; 265/1805 mit Tempowechsel; PWV3/PWV5 teilen dieselbe Höhenfolge (5d).
+
 ## 6. Bewusst ausgeschlossen (Begründung)
 
 - **Lizenzierung / Kopierschutz** (`lsapiw64.dll`, `clatc.dll`, Aktivierung, Abo-Prüfung): wird weder analysiert noch nachgebaut oder umgangen.
@@ -814,6 +863,7 @@ Mixer-Status 0x29 liefert dann beide Abspielzustände. Bestätigung nur per Mits
 | U29 | DJ Link: Namen der Abspielzustands-Codes (0x78 bzw. Mixer-Status) – im Code nur Gruppierung belegt | Mitschnitt |
 | U30 | XDJ-RX3 im DJ-Link-Netz: tatsächliche Gerätenummer, Geräteart und gesendete Pakettypen | Mitschnitt mit `rbf djlink-listen` am Gerät |
 | U31 | DJ Link: Dauer des Alterungs-Zeitgebers je Gerät (vermutlich 10000 ms) und genaue Zahl der IdUse-Durchläufe | Mitschnitt |
+| U32 | Analyse: genaue Abbildung der ms-Datensätze auf 5-Bit-Höhe und 3-Bit-Farbwerte (PWV3/PWV5/PWAV) und Inhalt von PWV4 | Kalibrierung an beobachteten Analysen |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |
