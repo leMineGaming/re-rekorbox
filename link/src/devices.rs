@@ -62,7 +62,7 @@ pub enum Event {
         kind: u8,
     },
     /// CDJ status of a player deck.
-    Status(Box<rekordbox_formats::djlink::CdjStatus>),
+    Status(Box<crate::status::DeckStatus>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

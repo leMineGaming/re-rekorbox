@@ -18,5 +18,6 @@ pub mod net;
 pub mod packets;
 pub mod rpc;
 pub mod server;
+pub mod status;
 
 pub use error::{LinkError, PacketError};

@@ -123,7 +123,9 @@ fn main() -> ExitCode {
     ));
     let t = Instant::now();
     let mut requests: BTreeMap<(u8, u8), usize> = BTreeMap::new();
-    let mut play: BTreeMap<u8, u32> = BTreeMap::new();
+    // per deck: (play state, track id, bpm×100, beat) – to print only on change
+    type DeckSnapshot = (u8, Option<u32>, Option<u16>, Option<u32>);
+    let mut play: BTreeMap<u8, DeckSnapshot> = BTreeMap::new();
     let mut rpcs: BTreeMap<String, usize> = BTreeMap::new();
     let mut db: BTreeMap<u16, usize> = BTreeMap::new();
     while t.elapsed().as_secs_f64() < seconds {
@@ -141,13 +143,20 @@ fn main() -> ExitCode {
                 }
                 LinkEvent::Adapter(None) => format!("{at:8.2} no usable adapter – waiting"),
                 LinkEvent::Presence(Event::Status(s)) => {
-                    // only changes, the unit sends status every 200 ms per deck
-                    if play.insert(s.device, s.play_state) == Some(s.play_state) {
+                    // the unit sends status ~3×/s per deck; print only when something changed
+                    let now = (s.play_state, s.track_id, s.bpm_x100, s.beat);
+                    if play.insert(s.device, now) == Some(now) {
                         continue;
                     }
                     format!(
-                        "{at:8.2} deck {} play state {:#x}, track {}, tempo {:?}",
-                        s.device, s.play_state, s.track_ref, s.tempo
+                        "{at:8.2} deck {} play {:#04x} track {:?} bpm {:?} pitch {:+.2}% beat {:?} bar {}",
+                        s.device,
+                        s.play_state,
+                        s.track_id,
+                        s.bpm(),
+                        s.pitch_percent(),
+                        s.beat,
+                        s.beat_in_bar
                     )
                 }
                 LinkEvent::Presence(Event::Request { from, kind }) => {

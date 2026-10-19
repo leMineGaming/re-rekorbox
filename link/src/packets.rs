@@ -7,7 +7,9 @@
 
 use std::net::Ipv4Addr;
 
-use rekordbox_formats::djlink::{self, Announce, CdjStatus, KeepAlive, MAGIC};
+use rekordbox_formats::djlink::{self, Announce, KeepAlive, MAGIC};
+
+use crate::status::DeckStatus;
 
 use crate::error::PacketError;
 
@@ -141,8 +143,8 @@ pub enum Request {
         from: u8,
         payload: Vec<u8>,
     },
-    /// 0x0A CDJ status.
-    Status(Box<CdjStatus>),
+    /// 0x0A deck status.
+    Status(Box<DeckStatus>),
     Other {
         kind: u8,
         from: u8,
@@ -175,9 +177,7 @@ pub fn parse_status_port(b: &[u8]) -> Result<Request, PacketError> {
             from: h.device,
             payload,
         },
-        kind::CDJ_STATUS => Request::Status(Box::new(
-            CdjStatus::parse(b).map_err(|e| PacketError::Format(e.to_string()))?,
-        )),
+        kind::CDJ_STATUS => Request::Status(Box::new(DeckStatus::parse(b)?)),
         k => Request::Other {
             kind: k,
             from: h.device,
@@ -344,8 +344,14 @@ pub fn describe(port: u16, b: &[u8]) -> String {
     }
     let what = match parse_status_port(b) {
         Ok(Request::Status(s)) => format!(
-            "CDJ status play {:#x} track {} load {:02X?} tempo {:?}",
-            s.play_state, s.track_ref, s.load_info, s.tempo
+            "deck {} status play {:#04x} slot {} track {:?} bpm {:?} pitch {:+.2}% beat {:?}",
+            s.device,
+            s.play_state,
+            s.slot,
+            s.track_id,
+            s.bpm(),
+            s.pitch_percent(),
+            s.beat
         ),
         Ok(Request::MediaQuery {
             reply_to,
