@@ -102,6 +102,10 @@ fn main() -> ExitCode {
     let mut cfg = cfg;
     if let Some(c) = &catalog {
         cfg.library = c.info();
+        // diagnosis: report playlists although there are none yet
+        if let Some(n) = val("--playlists").and_then(|s| s.parse().ok()) {
+            cfg.library.playlists = n;
+        }
         if db_delay <= 0.0 {
             cfg.catalog = Some(c.clone());
         }

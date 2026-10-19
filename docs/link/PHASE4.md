@@ -81,6 +81,33 @@ Broadcasts geblockt (Test 2026-10-19).
 - Abgedeckt sind außerdem Tracks, Blättern, Künstler → ALL → Tracks, Suche, Metadaten, 0x3100, Abbruch, DROP und unbekannte Anfragen.
 - Über Loopback laufen die geteilte Portabfrage, `ff ff` vor der Bereitschaft, Begrüßung und Sitzung sowie die Ablehnung fremder Subnetze.
 
+## Befund 2026-10-19: Quelle erscheint nicht – Stopp-Regel
+
+Netzseitig läuft alles wie bei rekordbox:
+
+- Anmeldung, 0x10/0x30/0x46, Portmapper/mountd/MNT, Medienabfrage 0x05/0x06
+- Portabfrage, DB-Verbindung, PLAYER_ID, 0x3007 (`CMD_SET_FILTER_ONOFF`), Hauptmenü und Menüseite (byte-gleich)
+
+Trotzdem zeigt die Quellenwahl nur „USB1“ und „SOFTWARE CONTROL“ (beide schon vor dem Start da). Die
+SOURCE-LED blinkt. Drücken von SOURCE oder Drehen am Browse-Knopf erzeugt **keinen** Netzverkehr zu uns.
+
+Ausgeschlossen wurden:
+
+- Firewall bzw. Netzprofil (unter „Öffentlich“ kommt alles an)
+- Playlist-Zahl 0 (Test mit 20)
+- Inhalt von 0x29 (ändert sich bei rekordbox nur im BPM)
+- Timing der Portabfrage (`ff ff` zuerst, `--db-delay`)
+- Neustart des Pults
+
+Damit hängt die Anzeige der Quelle an etwas außerhalb des Netzverkehrs. Naheliegend ist der USB-Kanal neben
+dem Netzadapter. In rekordbox stehen dazu Hinweise auf eine Geräte-Authentifizierung für die
+Verbindung mit DJ-Geräten (HID, „HidAuthData“, `receiveAuthStatus`). Nachgewiesen ist das nicht.
+Authentifizierung wird laut Vorgabe weder analysiert noch nachgebaut noch umgangen. **Stopp-Regel: Entscheidung
+liegt beim Nutzer.**
+
+Ein Test ohne Eingriff in die Authentifizierung: Pult und PC per LAN-Kabel über die LINK-Buchse verbinden
+(kein USB). Erscheint rekordbox dort als Quelle, ist zu prüfen, ob dann auch rekordbox-rs erscheint.
+
 ## Offen
 
 - **Test am Pult:** Erscheint die Quelle, gehen TRACK, ARTIST und SEARCH? Kommen Wellenform und Metadaten?
