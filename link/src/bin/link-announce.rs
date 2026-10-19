@@ -38,7 +38,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let val = |k: &str| {
         args.iter()
-            .position(|a| a == k)
+            .rposition(|a| a == k)
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
