@@ -68,6 +68,8 @@ pub struct LinkConfig {
     /// The library offered over the database server; `None` = port query answers "not ready".
     /// When set, its counts replace `library`.
     pub catalog: Option<Arc<Catalog>>,
+    /// TCP port of the database server; `None` = [`crate::server::DB_PORT`] (12524).
+    pub db_port: Option<u16>,
 }
 
 /// Everything the service reports.
@@ -181,6 +183,7 @@ pub fn start(mut cfg: LinkConfig) -> Result<LinkHandle, LinkError> {
     let db = DbServer::start(
         shared.clone(),
         rekordbox_formats::dbserver::PORT_QUERY,
+        cfg.db_port.unwrap_or(crate::server::DB_PORT),
         ev_tx.clone(),
     )?;
     let flag = stop.clone();

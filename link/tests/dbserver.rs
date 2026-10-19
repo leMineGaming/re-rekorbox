@@ -244,7 +244,7 @@ fn tcp_port_query_greeting_and_session() {
     let shared = Arc::new(Shared::default());
     shared.set_subnet(Ipv4Addr::new(127, 0, 0, 1), Ipv4Addr::new(255, 0, 0, 0));
     let (tx, rx) = std::sync::mpsc::channel();
-    let srv = DbServer::start(shared.clone(), 0, tx).unwrap();
+    let srv = DbServer::start(shared.clone(), 0, 0, tx).unwrap();
     // not ready: no library, no number
     assert_eq!(port_query(srv.query_port), 0xFFFF);
     shared.set_catalog(Arc::new(catalog()));
@@ -278,7 +278,7 @@ fn tcp_outside_the_link_subnet_is_refused() {
     shared.set_catalog(Arc::new(catalog()));
     shared.own.store(0x11, Ordering::Relaxed);
     let (tx, _rx) = std::sync::mpsc::channel();
-    let srv = DbServer::start(shared, 0, tx).unwrap();
+    let srv = DbServer::start(shared, 0, 0, tx).unwrap();
     let mut q = TcpStream::connect((Ipv4Addr::LOCALHOST, srv.query_port)).unwrap();
     q.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     let _ = q.write_all(PORT_QUERY_REQUEST);

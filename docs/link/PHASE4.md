@@ -14,6 +14,24 @@ Datenbank-Port bekommt (siehe PHASE1.md, Nachtrag „Quelle blinkt“).
 `link-announce` lädt die Bibliothek (rekordbox-Analysen + eigene aus `%APPDATA%\rekordbox-rs\ANLZ`,
 Musikordner `--music` oder `%USERPROFILE%\Music`) und bietet sie an; `Link-Anmeldung.cmd` läuft 15 min.
 
+## Ports (für Firewall-Regeln)
+
+Alle eingehend, nur aus dem Subnetz des Link-Adapters beantwortet:
+
+| Protokoll | Port | Wofür |
+|---|---|---|
+| UDP | 50000, 50001, 50002 | DJ Link (Anmeldung, Beat, Status) |
+| UDP | 50111 | Portmapper |
+| UDP | 36251 | mountd |
+| UDP | 2049 | NFS (Dateien laden, Phase 5) |
+| TCP | 12523 | Portabfrage der Datenbank |
+| TCP | 12524 | Datenbank (`server::DB_PORT`, `LinkConfig::db_port`, `link-announce --db-port`) |
+
+rekordbox vergibt den Datenbank-Port bei jedem Start neu (im Mitschnitt 59930). Wir nehmen einen festen,
+damit eine Port-Regel reicht. Die Firewall-Freigabe, die Windows beim ersten Start anlegt, gilt nur für das
+Netzprofil, das gerade aktiv war. Unter „Privat“ wurde deshalb alles außer den Antworten auf eigene
+Broadcasts geblockt (Test 2026-10-19).
+
 ## Protokoll, wie rekordbox antwortet (Mitschnitt 1)
 
 - **Antwortformat:** Der Argumenttyp-Block ist nur so lang wie die Argumentzahl (rekordbox), nicht 12 Byte

@@ -1,6 +1,7 @@
 //! TCP side of the database server: the port query on 12523 (`00 00 00 0f "RemoteDBServer\0"` →
-//! u16 port, `ff ff` while no library is loaded, as rekordbox) and the database port with one thread
-//! per connection running a [`Session`]. Only devices in the link adapter's subnet are served.
+//! u16 port, `ff ff` while no library is loaded, as rekordbox) and the database port ([`DB_PORT`],
+//! fixed so that a firewall rule can name it; rekordbox picks a free one) with one thread per
+//! connection running a [`Session`]. Only devices in the link adapter's subnet are served.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -18,6 +19,9 @@ use crate::catalog::Catalog;
 use crate::dbserver::{encode, Reply, Session};
 use crate::error::LinkError;
 use crate::net::LinkEvent;
+
+/// Default TCP port of the database server.
+pub const DB_PORT: u16 = 12524;
 
 /// How long a blocking read waits before checking the stop flag.
 const POLL: Duration = Duration::from_millis(500);
@@ -72,10 +76,12 @@ pub struct DbServer {
 }
 
 impl DbServer {
-    /// Bind the port query (`query_port`, normally 12523; 0 in tests) and a free database port.
+    /// Bind the port query (`query_port`, normally 12523) and the database port (`db_port`, normally
+    /// [`DB_PORT`]); 0 = any free port (tests).
     pub fn start(
         shared: Arc<Shared>,
         query_port: u16,
+        db_port: u16,
         events: Sender<LinkEvent>,
     ) -> Result<DbServer, LinkError> {
         let query =
@@ -83,7 +89,11 @@ impl DbServer {
                 port: query_port,
                 source,
             })?;
-        let db = TcpListener::bind(("0.0.0.0", 0))?;
+        let db =
+            TcpListener::bind(("0.0.0.0", db_port)).map_err(|source| LinkError::PortInUse {
+                port: db_port,
+                source,
+            })?;
         let db_port = db.local_addr()?.port();
         let query_port = query.local_addr()?.port();
         query.set_nonblocking(true)?;

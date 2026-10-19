@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! link-announce [--seconds N] [--adapter NAME|IP] [--tracks N] [--playlists N] [--drives CD]
-//!               [--music DIR] [--no-library] [--log FILE]
+//!               [--music DIR] [--no-library] [--db-port N]
+//!               [--log FILE]
 //! ```
 //! Offers the library (rekordbox's analyses and our own, matched against `--music DIR` or the Music
 //! folder) to the unit for browsing; `--no-library` announces without it. Loading tracks (NFS) is
@@ -92,6 +93,7 @@ fn main() -> ExitCode {
             .map(|c| c.to_ascii_uppercase())
             .collect(),
         catalog,
+        db_port: val("--db-port").and_then(|s| s.parse().ok()),
     };
     let link = match net::start(cfg) {
         Ok(l) => l,
