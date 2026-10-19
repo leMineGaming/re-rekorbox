@@ -214,13 +214,15 @@ fn send(sockets: &[UdpSocket; 3], adapter: &Adapter, out: Vec<Out>) {
             _ => &sockets[2],
         };
         match sock.send_to(&bytes, SocketAddrV4::new(ip, port)) {
-            Ok(_) => trace!(
-                "-> {ip}:{port} type {:#04x}",
-                bytes.get(0x0A).copied().unwrap_or(0)
-            ),
+            Ok(_) => trace!("-> {ip}:{port} {}", hex(&bytes)),
             Err(e) => debug!("send to {ip}:{port} failed: {e}"),
         }
     }
+}
+
+/// Datagram as hex for the trace log (`RUST_LOG=rbx_link::net=trace`).
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn run(
@@ -299,6 +301,7 @@ fn run(
                     match sock.recv_from(&mut buf) {
                         Ok((n, std::net::SocketAddr::V4(from))) => {
                             busy = true;
+                            trace!("<- {from} :{port} {}", hex(&buf[..n]));
                             let out = p.receive(now(), *from.ip(), port, &buf[..n]);
                             send(&sockets, a, out);
                         }
@@ -375,7 +378,11 @@ fn serve_rpc(
                 if let Err(e) = sock.send_to(&answer, from) {
                     debug!("rpc answer to {from}: {e}");
                 }
-                trace!("rpc {from}: {kind:?}");
+                trace!(
+                    "rpc {from}: {kind:?} <- {} -> {}",
+                    hex(&buf[..n]),
+                    hex(&answer)
+                );
                 let _ = events.send(LinkEvent::Rpc {
                     from: *from.ip(),
                     kind,
