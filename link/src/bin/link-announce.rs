@@ -4,7 +4,7 @@
 //! ```text
 //! link-announce [--seconds N] [--adapter NAME|IP] [--tracks N] [--playlists N] [--drives CD]
 //!               [--music DIR] [--no-library] [--db-port N]
-//!               [--log FILE]
+//!               [--db-delay S] [--log FILE]
 //! ```
 //! Offers the library (rekordbox's analyses and our own, matched against `--music DIR` or the Music
 //! folder) to the unit for browsing; `--no-library` announces without it. Loading tracks (NFS) is
@@ -92,9 +92,21 @@ fn main() -> ExitCode {
             .filter(char::is_ascii_alphabetic)
             .map(|c| c.to_ascii_uppercase())
             .collect(),
-        catalog,
+        catalog: None,
         db_port: val("--db-port").and_then(|s| s.parse().ok()),
     };
+    // like rekordbox while its database is still opening: the port query answers `ff ff` for a while
+    let db_delay: f64 = val("--db-delay")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let mut cfg = cfg;
+    if let Some(c) = &catalog {
+        cfg.library = c.info();
+        if db_delay <= 0.0 {
+            cfg.catalog = Some(c.clone());
+        }
+    }
+    let mut delayed = catalog.filter(|_| db_delay > 0.0);
     let link = match net::start(cfg) {
         Ok(l) => l,
         Err(e) => {
@@ -111,6 +123,12 @@ fn main() -> ExitCode {
     let mut rpcs: BTreeMap<String, usize> = BTreeMap::new();
     let mut db: BTreeMap<u16, usize> = BTreeMap::new();
     while t.elapsed().as_secs_f64() < seconds {
+        if t.elapsed().as_secs_f64() >= db_delay {
+            if let Some(c) = delayed.take() {
+                link.set_catalog(c);
+                out.line(&format!("{:8.2} database ready", t.elapsed().as_secs_f64()));
+            }
+        }
         for e in link.events() {
             let at = t.elapsed().as_secs_f64();
             let line = match e {
