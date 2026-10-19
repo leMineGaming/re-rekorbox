@@ -12,7 +12,7 @@ if not exist "%EXE%" (
     exit /b 1
 )
 echo Bibliothek wird geladen (kann etwa eine Minute dauern) ...
-"%EXE%" --seconds 900 --log "%APPDATA%\rekordbox-rs\logs\link-anmeldung.txt" %*
+"%EXE%" --seconds 900 --db-delay 10 --log "%APPDATA%\rekordbox-rs\logs\link-anmeldung.txt" %*
 echo.
 echo Protokoll: %APPDATA%\rekordbox-rs\logs\link-anmeldung.txt
 pause
