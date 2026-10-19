@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! link-announce [--seconds N] [--adapter NAME|IP] [--tracks N] [--playlists N] [--drives CD]
-//!               [--log FILE]
+//!               [--log FILE] [--probe-db]
 //! ```
 //! There is no library server yet: the unit should list the computer under LINK and ask for its
 //! media (0x05), but browsing does not work before Phase 4.
@@ -85,6 +85,26 @@ fn main() -> ExitCode {
     out.line(&format!(
         "announcing for {seconds} s – on the unit: choose LINK / the source selection"
     ));
+    // diagnosis until Phase 4: who knocks on the dbserver port (nothing is answered)
+    if args.iter().any(|a| a == "--probe-db") {
+        match std::net::TcpListener::bind(("0.0.0.0", 12523)) {
+            Ok(l) => {
+                std::thread::spawn(move || {
+                    for c in l.incoming().flatten() {
+                        let mut buf = [0u8; 64];
+                        let _ = c.set_read_timeout(Some(Duration::from_secs(1)));
+                        let n = std::io::Read::read(&mut &c, &mut buf).unwrap_or(0);
+                        println!(
+                            "         tcp 12523 from {:?}: {:02x?}",
+                            c.peer_addr().ok(),
+                            &buf[..n]
+                        );
+                    }
+                });
+            }
+            Err(e) => out.line(&format!("tcp 12523: {e}")),
+        }
+    }
     let t = Instant::now();
     let mut requests: BTreeMap<(u8, u8), usize> = BTreeMap::new();
     let mut play: BTreeMap<u8, u32> = BTreeMap::new();
