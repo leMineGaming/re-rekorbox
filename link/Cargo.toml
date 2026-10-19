@@ -1,0 +1,24 @@
+[package]
+name = "rbx-link"
+version = "0.1.0"
+edition = "2021"
+description = "Pro DJ Link presence like rekordbox in LINK EXPORT mode (docs/link): packets, devices, network"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "rbx_link"
+
+[dependencies]
+rekordbox-formats = { path = ".." }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[[bin]]
+name = "link-sniff"
+path = "src/bin/link-sniff.rs"
+
+[[bin]]
+name = "link-announce"
+path = "src/bin/link-announce.rs"

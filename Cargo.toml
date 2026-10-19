@@ -18,4 +18,4 @@ path = "src/bin/rbf.rs"
 quick-xml = "=0.31.0"
 
 [workspace]
-members = [".", "engine", "ui"]
+members = [".", "engine", "ui", "link"]

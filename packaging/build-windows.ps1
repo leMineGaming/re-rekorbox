@@ -24,17 +24,17 @@ if (-not $SkipTests) {
 
 Write-Host '-- Release-Build (statische C-Laufzeit)'
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
-cargo build --release --target-dir target\dist -p rbx-ui -p rbx-engine -p rekordbox-formats --bins
+cargo build --release --target-dir target\dist -p rbx-ui -p rbx-engine -p rekordbox-formats -p rbx-link --bins
 $build = $LASTEXITCODE
 Remove-Item Env:RUSTFLAGS
 if ($build -ne 0) { throw 'build failed' }
 
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
-foreach ($exe in 'rbx-ui', 'rbx-play', 'rbx-analyze', 'rbx-selftest', 'rbf') {
+foreach ($exe in 'rbx-ui', 'rbx-play', 'rbx-analyze', 'rbx-selftest', 'rbf', 'link-announce', 'link-sniff') {
     Copy-Item "target\dist\release\$exe.exe" $stage
 }
-foreach ($f in 'install.ps1', 'uninstall.ps1', 'Installieren.cmd', 'Selbsttest.cmd', 'Controller-Test.cmd', 'Link-Diagnose.cmd', 'Link-Mitschnitt.cmd', 'link-capture.ps1', 'LIESMICH.txt') {
+foreach ($f in 'install.ps1', 'uninstall.ps1', 'Installieren.cmd', 'Selbsttest.cmd', 'Controller-Test.cmd', 'Link-Diagnose.cmd', 'Link-Anmeldung.cmd', 'Link-Mitschnitt.cmd', 'link-capture.ps1', 'LIESMICH.txt') {
     Copy-Item "packaging\windows\$f" $stage
 }
 Copy-Item 'ui\assets\icon.ico' $stage

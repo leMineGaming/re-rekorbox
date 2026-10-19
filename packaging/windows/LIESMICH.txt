@@ -52,6 +52,8 @@ Hinweis XDJ-RX3: Im PC-Modus sendet das Gerät ohne rekordbox keine MIDI-Daten; 
 über MIDI funktioniert deshalb mit frei sendenden Controllern, nicht mit dem XDJ-RX3. Für das
 XDJ-RX3 ist die Anbindung über Link Export in Arbeit (das Pult spielt, rekordbox-rs liefert
 Bibliothek und Analysedaten). "Link-Diagnose.cmd" zeigt, was das Gerät im DJ-Link-Netz sendet;
+"Link-Anmeldung.cmd" meldet rekordbox-rs wie rekordbox im DJ-Link-Netz an (Phase 1;
+am Pult LINK wählen) und schreibt ein Protokoll nach %APPDATA%\rekordbox-rs\logs;
 "Link-Mitschnitt.cmd" zeichnet geführt den Verkehr zwischen rekordbox und dem Pult auf.
 
 Controller-Test: "Controller-Test.cmd" (oder in rbx-ui: Einstellungen > Selbsttest >
