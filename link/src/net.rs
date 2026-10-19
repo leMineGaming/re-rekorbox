@@ -17,8 +17,9 @@ use tracing::{debug, info, trace, warn};
 use crate::catalog::Catalog;
 use crate::devices::{Config, Event, Out, Presence};
 use crate::error::LinkError;
+use crate::nfs::Fs;
 use crate::packets::{LibraryInfo, PORT_ANNOUNCE, PORT_BEAT, PORT_STATUS};
-use crate::rpc::{self, Exports, PORT_MOUNTD, PORT_PORTMAP};
+use crate::rpc::{self, Exports, PORT_MOUNTD, PORT_NFS, PORT_PORTMAP};
 use crate::server::{DbServer, Shared};
 
 /// How often the adapter list is checked for hot-plug.
@@ -171,7 +172,7 @@ pub fn choose_adapter(wanted: Option<&str>) -> Option<Adapter> {
 /// Start the presence; returns once the sockets are bound.
 pub fn start(mut cfg: LinkConfig) -> Result<LinkHandle, LinkError> {
     let sockets = [bind(PORT_ANNOUNCE)?, bind(PORT_BEAT)?, bind(PORT_STATUS)?];
-    let rpc_sockets = [bind(PORT_PORTMAP)?, bind(PORT_MOUNTD)?];
+    let rpc_sockets = [bind(PORT_PORTMAP)?, bind(PORT_MOUNTD)?, bind(PORT_NFS)?];
     let shared = Arc::new(Shared::default());
     if let Some(c) = cfg.catalog.take() {
         cfg.library = c.info();
@@ -228,7 +229,7 @@ fn hex(b: &[u8]) -> String {
 fn run(
     cfg: LinkConfig,
     sockets: [UdpSocket; 3],
-    rpc_sockets: [UdpSocket; 2],
+    rpc_sockets: [UdpSocket; 3],
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
     control: Receiver<Control>,
@@ -242,6 +243,7 @@ fn run(
     let mut presence: Option<Presence> = None;
     let mut last_check = Instant::now() - ADAPTER_CHECK;
     let mut buf = [0u8; 0x5C0];
+    let mut nfs_fs: Option<(Vec<char>, Fs)> = None;
     while !stop.load(Ordering::Relaxed) {
         for c in control.try_iter() {
             match c {
@@ -321,7 +323,12 @@ fn run(
             } else {
                 &[]
             };
-            busy |= serve_rpc(&rpc_sockets, a, drives, &events, &mut buf);
+            // keep one Fs per drive set (its handle table must persist across datagrams)
+            if nfs_fs.as_ref().map(|(d, _)| d.as_slice()) != Some(drives) {
+                nfs_fs = Some((drives.to_vec(), Fs::new(drives)));
+            }
+            let fs = &nfs_fs.as_ref().unwrap().1;
+            busy |= serve_rpc(&rpc_sockets, a, drives, fs, &events, &mut buf);
             let out = p.tick(now());
             send(&sockets, a, out);
             for e in p.take_events() {
@@ -352,9 +359,10 @@ fn run(
 
 /// Answer pending portmapper/mountd datagrams; true if there were any.
 fn serve_rpc(
-    sockets: &[UdpSocket; 2],
+    sockets: &[UdpSocket; 3],
     adapter: &Adapter,
     drives: &[char],
+    fs: &Fs,
     events: &Sender<LinkEvent>,
     buf: &mut [u8],
 ) -> bool {
@@ -364,7 +372,10 @@ fn serve_rpc(
         netmask: adapter.netmask,
     };
     let mut busy = false;
-    for sock in sockets {
+    for (port, sock) in [PORT_PORTMAP, PORT_MOUNTD, PORT_NFS]
+        .into_iter()
+        .zip(sockets)
+    {
         loop {
             let (n, from) = match sock.recv_from(buf) {
                 Ok((n, SocketAddr::V4(from))) => (n, from),
@@ -378,6 +389,17 @@ fn serve_rpc(
             busy = true;
             if !adapter.same_subnet(*from.ip()) {
                 debug!("rpc from {from} outside the link subnet ignored");
+                continue;
+            }
+            if port == PORT_NFS {
+                let Ok(call) = rpc::parse_call(&buf[..n]) else {
+                    continue;
+                };
+                let (answer, what) = crate::nfs::answer(fs, &call);
+                if let Err(e) = sock.send_to(&answer, from) {
+                    debug!("nfs answer to {from}: {e}");
+                }
+                trace!("nfs {from}: {what}");
                 continue;
             }
             if let Some((answer, kind)) = rpc::answer(&exports, &buf[..n]) {

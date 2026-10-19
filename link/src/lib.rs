@@ -15,6 +15,7 @@ pub mod dbserver;
 pub mod devices;
 pub mod error;
 pub mod net;
+pub mod nfs;
 pub mod packets;
 pub mod rpc;
 pub mod server;

@@ -1,6 +1,6 @@
 //! ONC RPC over UDP as the players use it before they ask for a computer's media (capture 1, see
 //! `docs/link/PHASE1.md`): the portmapper on **UDP 50111** (not 111) and mountd with its export list
-//! and MNT. Pure: a datagram in, the answer out. Reading files (nfsd, port 2049) is Phase 5.
+//! and MNT. Pure: a datagram in, the answer out. The NFS file server (nfsd, port 2049) is in `nfs`.
 //!
 //! Export paths are UTF-16LE (`/C/` = `2F 00 43 00 2F 00`), the group is `ip/netmask` of the adapter.
 
@@ -24,7 +24,7 @@ const RPC_VERSION: u32 = 2;
 const IPPROTO_UDP: u32 = 17;
 
 /// accept_stat of an accepted reply.
-const SUCCESS: u32 = 0;
+pub(crate) const SUCCESS: u32 = 0;
 const PROG_UNAVAIL: u32 = 1;
 const PROC_UNAVAIL: u32 = 3;
 const GARBAGE_ARGS: u32 = 4;
@@ -42,7 +42,7 @@ pub struct Call<'a> {
     pub args: &'a [u8],
 }
 
-fn u32_at(b: &[u8], i: usize) -> Result<u32, PacketError> {
+pub(crate) fn u32_at(b: &[u8], i: usize) -> Result<u32, PacketError> {
     b.get(i..i + 4)
         .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
         .ok_or(PacketError::TooShort {
@@ -52,7 +52,7 @@ fn u32_at(b: &[u8], i: usize) -> Result<u32, PacketError> {
 }
 
 /// Opaque/string of XDR at `i`: (bytes, offset after the padding).
-fn opaque_at(b: &[u8], i: usize) -> Result<(&[u8], usize), PacketError> {
+pub(crate) fn opaque_at(b: &[u8], i: usize) -> Result<(&[u8], usize), PacketError> {
     let n = u32_at(b, i)? as usize;
     let end = i + 4 + n;
     let data = b.get(i + 4..end).ok_or(PacketError::TooShort {
@@ -78,18 +78,18 @@ pub fn parse_call(b: &[u8]) -> Result<Call<'_>, PacketError> {
     })
 }
 
-fn put_u32(v: &mut Vec<u8>, x: u32) {
+pub(crate) fn put_u32(v: &mut Vec<u8>, x: u32) {
     v.extend_from_slice(&x.to_be_bytes());
 }
 
-fn put_opaque(v: &mut Vec<u8>, data: &[u8]) {
+pub(crate) fn put_opaque(v: &mut Vec<u8>, data: &[u8]) {
     put_u32(v, data.len() as u32);
     v.extend_from_slice(data);
     v.resize(v.len() + (4 - data.len() % 4) % 4, 0);
 }
 
 /// Accepted reply with AUTH_NULL verifier.
-fn reply(xid: u32, accept: u32, body: &[u8]) -> Vec<u8> {
+pub(crate) fn reply(xid: u32, accept: u32, body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(24 + body.len());
     for x in [xid, REPLY, 0, 0, 0, accept] {
         put_u32(&mut v, x);
