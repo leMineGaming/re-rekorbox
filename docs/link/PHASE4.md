@@ -108,6 +108,38 @@ liegt beim Nutzer.**
 Ein Test ohne Eingriff in die Authentifizierung: Pult und PC per LAN-Kabel über die LINK-Buchse verbinden
 (kein USB). Erscheint rekordbox dort als Quelle, ist zu prüfen, ob dann auch rekordbox-rs erscheint.
 
+## Tiefenanalyse 2026-10-19 (Nachtrag)
+
+Vollständige Inventur des rekordbox-Mitschnitts (alle Protokolle, Ports, ARP, IPv6, Multicast): Zwischen PC und
+Pult gibt es nur DJ Link (50000–50002), Portmapper/mountd/NFS, TCP 12523 und den Datenbank-Port – alles
+umgesetzt. Byte-Vergleich aller UDP-Pakete (Trace mit `RUST_LOG=rbx_link=trace`) gegen den Mitschnitt:
+**alle identisch**, auch Hostname, 0x06, 0x11, 0x16, 0x29, 0x31, 0x47, Claim- und Keep-alive-Folgen. Die
+Statuspakete des Pults an uns gleichen denen an rekordbox im selben Zustand.
+
+Gefunden und angeglichen (Commit dieses Nachtrags):
+
+- **0x16 an beide Decknummern:** rekordbox schickt 0x16 jeweils zweimal (an #11 und #12, gleiche Bytes,
+  0,5 ms Abstand). Wir hatten nur #11.
+- **Erstes 0x16 erst nach dem nächsten Keep-alive des Pults**, wenn das Pult schon vor unserem Claim bekannt
+  war (rekordbox: 0,74 s nach dem eigenen ersten Keep-alive). Wir hatten es beim Claim gesendet.
+- **Exportliste leer**, solange die Bibliothek nicht bereit ist (wie rekordbox anfangs), zusammen mit
+  `--db-delay`.
+
+Weitere Beobachtungen:
+
+- Das Pult schickt jede Anfrage zweimal (0x30, 0x46, 0x05, Portabfrage) – rekordbox und wir beantworten beide.
+- Auch ein frisch gestartetes Pult verbindet sich sofort mit der Datenbank und sendet `0x3007`
+  (`CMD_SET_FILTER_ONOFF`) und Hauptmenü Ort 7, je Deck einmal. Bei rekordbox sah man das nicht, weil dessen
+  Portabfrage zu dem Zeitpunkt `ff ff` lieferte.
+- Beim Wechsel der Quelle (z. B. auf SOFTWARE CONTROL) schließt das Pult unsere Datenbankverbindung (`CMD_INFO_DROP`).
+
+Ergebnis nach Neustart des Pults mit identischem Ablauf: **weiterhin keine neue Quelle.** Das XDJ-RX3 hat am
+USB zwei getrennte Funktionen: den Netzadapter (PID 0x0007, Pro DJ Link) und Audio/MIDI/HID (PID 0x003D,
+„SOFTWARE CONTROL“). Nächster, entscheidender Test (ohne Eingriff in eine Authentifizierung): rekordbox im
+EXPORT-Modus, während im Geräte-Manager nur das Verbundgerät PID 0x003D deaktiviert ist. Erscheint die
+LINK-Quelle trotzdem, liegt der Unterschied noch im Netz. Erscheint sie nicht, hängt die Anzeige an der
+USB-Seite (HID/MIDI), und es gilt die Stopp-Regel.
+
 ## Offen
 
 - **Test am Pult:** Erscheint die Quelle, gehen TRACK, ARTIST und SEARCH? Kommen Wellenform und Metadaten?

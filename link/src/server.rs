@@ -52,7 +52,7 @@ impl Shared {
         v != 0 && u32::from(*p.ip()) & mask == ip & mask
     }
 
-    fn catalog(&self) -> Option<Arc<Catalog>> {
+    pub fn catalog(&self) -> Option<Arc<Catalog>> {
         match self.catalog.read() {
             Ok(c) => c.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),

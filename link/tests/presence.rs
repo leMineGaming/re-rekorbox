@@ -246,8 +246,30 @@ fn presence_0x16_on_appearance_after_4_3_s_and_then_rarely() {
         }
         t += 0.001;
     }
-    assert_eq!(sent.len(), 3, "{sent:?}");
-    assert!(sent[0] < 0.01);
-    assert!((sent[1] - 4.3).abs() < 0.01);
-    assert!((sent[2] - 141.3).abs() < 0.01);
+    // one for each deck number (11 and 12), as rekordbox
+    assert_eq!(sent.len(), 6, "{sent:?}");
+    assert!(sent[0] < 0.01 && sent[1] < 0.01);
+    assert!((sent[2] - 4.3).abs() < 0.01 && (sent[3] - 4.3).abs() < 0.01);
+    assert!((sent[4] - 141.3).abs() < 0.01);
+}
+
+#[test]
+fn a_unit_known_before_the_claim_gets_0x16_on_its_next_keep_alive() {
+    let mut p = presence();
+    p.start(0.0);
+    run(&mut p, 0.0, 1.0);
+    // the unit keeps alive while we are still claiming
+    p.receive(1.0, XDJ, PORT_ANNOUNCE, &bytes(XDJ_50000_06));
+    let presence_at = |v: Vec<(f64, u16, Vec<u8>)>| -> Vec<f64> {
+        v.into_iter()
+            .filter(|s| s.1 == PORT_STATUS && s.2[0x0A] == 0x16)
+            .map(|s| s.0)
+            .collect()
+    };
+    assert!(presence_at(run_full(&mut p, 1.0, CLAIMED + 0.5)).is_empty());
+    assert_eq!(p.number(), Some(17));
+    // its next keep-alive after the claim
+    p.receive(CLAIMED + 0.5, XDJ, PORT_ANNOUNCE, &bytes(XDJ_50000_06));
+    let sent = presence_at(run_full(&mut p, CLAIMED + 0.5, CLAIMED + 0.6));
+    assert_eq!(sent.len(), 2, "both deck numbers: {sent:?}");
 }

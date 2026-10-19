@@ -315,7 +315,13 @@ fn run(
                     }
                 }
             }
-            busy |= serve_rpc(&rpc_sockets, a, &cfg.drives, &events, &mut buf);
+            // like rekordbox: no exports while the library is not ready yet
+            let drives: &[char] = if shared.catalog().is_some() {
+                &cfg.drives
+            } else {
+                &[]
+            };
+            busy |= serve_rpc(&rpc_sockets, a, drives, &events, &mut buf);
             let out = p.tick(now());
             send(&sockets, a, out);
             for e in p.take_events() {

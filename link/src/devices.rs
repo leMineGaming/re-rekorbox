@@ -4,8 +4,9 @@
 //!
 //! Timing and content as in capture 1 (`docs/link/CAPTURE1.md`): three discoveries 0.22 s apart,
 //! then six rounds of number claims over all candidates 0.1 s apart, then keep-alives every 2 s;
-//! status 0x29 broadcast every 0.1 s; 0x16 to every player when it appears, 4.3 s later and then
-//! every 137 s; answers to 0x10 always, to 0x30 and 0x46 once the player is in the table (as
+//! status 0x29 broadcast every 0.1 s; 0x16 to every device number of a player (both decks of an
+//! XDJ-RX3) when it appears, 4.3 s later and then every 137 s – a player already known before our
+//! number is claimed gets its first 0x16 on its next keep-alive, as rekordbox does; answers to 0x10 always, to 0x30 and 0x46 once the player is in the table (as
 //! rekordbox: the player asks again), and to media queries.
 
 use std::collections::BTreeMap;
@@ -202,7 +203,8 @@ impl Presence {
                 .map(|(&n, &(_, sent))| (n, sent))
                 .collect();
             for (n, sent) in due {
-                if let Some(d) = self.table.get(n).filter(|d| !d.second_deck) {
+                // rekordbox notifies every device number, also the second deck of a two-deck unit
+                if let Some(d) = self.table.get(n) {
                     out.push(Out::Unicast {
                         ip: d.ip,
                         port: PORT_STATUS,
@@ -270,12 +272,32 @@ impl Presence {
                                 if let Some(d) = self.table.get(n) {
                                     self.events.push(Event::DeviceAdded(d.clone()));
                                 }
-                                self.next_presence.insert(n, (now, 0));
+                                // before our number is claimed the player does not know us yet: the
+                                // first 0x16 waits for its next keep-alive
+                                let due = if self.phase == Phase::Running {
+                                    now
+                                } else {
+                                    f64::INFINITY
+                                };
+                                self.next_presence.insert(n, (due, 0));
                             }
                             TableChange::Overwritten(n) | TableChange::Refreshed(n) => {
                                 self.seen.insert(n, now);
                             }
                             TableChange::Conflict(_) | TableChange::Invalid => {}
+                        }
+                    }
+                    if self.phase == Phase::Running {
+                        let waiting: Vec<u8> = self
+                            .next_presence
+                            .iter()
+                            .filter(|(n, (t, _))| {
+                                t.is_infinite() && self.table.get(**n).is_some_and(|d| d.ip == from)
+                            })
+                            .map(|(n, _)| *n)
+                            .collect();
+                        for n in waiting {
+                            self.next_presence.insert(n, (now, 0));
                         }
                     }
                 }
