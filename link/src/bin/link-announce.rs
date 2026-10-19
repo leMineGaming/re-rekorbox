@@ -2,7 +2,8 @@
 //! the players do (Phase 1 live test; rekordbox must be closed).
 //!
 //! ```text
-//! link-announce [--seconds N] [--adapter NAME|IP] [--tracks N] [--playlists N] [--log FILE]
+//! link-announce [--seconds N] [--adapter NAME|IP] [--tracks N] [--playlists N] [--drives CD]
+//!               [--log FILE]
 //! ```
 //! There is no library server yet: the unit should list the computer under LINK and ask for its
 //! media (0x05), but browsing does not work before Phase 4.
@@ -67,6 +68,12 @@ fn main() -> ExitCode {
             tracks: num("--tracks", 0),
             playlists: num("--playlists", 0),
         },
+        drives: val("--drives")
+            .unwrap_or_else(|| "C".into())
+            .chars()
+            .filter(char::is_ascii_alphabetic)
+            .map(|c| c.to_ascii_uppercase())
+            .collect(),
     };
     let link = match net::start(cfg) {
         Ok(l) => l,
@@ -81,6 +88,7 @@ fn main() -> ExitCode {
     let t = Instant::now();
     let mut requests: BTreeMap<(u8, u8), usize> = BTreeMap::new();
     let mut play: BTreeMap<u8, u32> = BTreeMap::new();
+    let mut rpcs: BTreeMap<String, usize> = BTreeMap::new();
     while t.elapsed().as_secs_f64() < seconds {
         for e in link.events() {
             let at = t.elapsed().as_secs_f64();
@@ -113,6 +121,16 @@ fn main() -> ExitCode {
                     if d.second_deck { " second deck" } else { "" }
                 ),
                 LinkEvent::Presence(e) => format!("{at:8.2} {e:?}"),
+                LinkEvent::Rpc { from, kind } => {
+                    let what = format!("{kind:?}");
+                    let n = rpcs.entry(what.clone()).or_default();
+                    *n += 1;
+                    // the unit polls the export list every 200 ms – show only the first few
+                    if *n > 3 {
+                        continue;
+                    }
+                    format!("{at:8.2} rpc from {from}: {what} ({n}.)")
+                }
             };
             out.line(&line);
         }
@@ -122,6 +140,9 @@ fn main() -> ExitCode {
     out.line("\nrequests answered or seen:");
     for ((from, kind), n) in &requests {
         out.line(&format!("  #{from} {kind:#04x} × {n}"));
+    }
+    for (what, n) in &rpcs {
+        out.line(&format!("  rpc {what} × {n}"));
     }
     if requests.keys().any(|(_, k)| *k == 0x05) {
         out.line("  media query 0x05 came – the unit asked for our library (answered with 0x06)");

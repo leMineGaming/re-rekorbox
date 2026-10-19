@@ -1,8 +1,9 @@
-//! The network side: adapter choice (the DJ unit's USB adapter first), the three UDP sockets, a thread
-//! that drives [`Presence`], hot-plug and adapter changes. Nothing here blocks the caller; events
-//! come through a channel.
+//! The network side: adapter choice (the DJ unit's USB adapter first), the three DJ Link UDP sockets
+//! plus portmapper and mountd ([`crate::rpc`]), a thread that drives [`Presence`], hot-plug and
+//! adapter changes. Nothing here blocks the caller; events come through a channel. RPC is answered
+//! only for devices in the link adapter's subnet.
 
-use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use tracing::{debug, info, trace, warn};
 use crate::devices::{Config, Event, Out, Presence};
 use crate::error::LinkError;
 use crate::packets::{LibraryInfo, PORT_ANNOUNCE, PORT_BEAT, PORT_STATUS};
+use crate::rpc::{self, Exports, PORT_MOUNTD, PORT_PORTMAP};
 
 /// How often the adapter list is checked for hot-plug.
 pub const ADAPTER_CHECK: Duration = Duration::from_secs(2);
@@ -26,7 +28,15 @@ pub struct Adapter {
     pub description: String,
     pub ip: Ipv4Addr,
     pub broadcast: Ipv4Addr,
+    pub netmask: Ipv4Addr,
     pub mac: [u8; 6],
+}
+
+impl Adapter {
+    fn same_subnet(&self, ip: Ipv4Addr) -> bool {
+        let m = u32::from(self.netmask);
+        u32::from(ip) & m == u32::from(self.ip) & m
+    }
 }
 
 impl From<&Interface> for Adapter {
@@ -36,6 +46,7 @@ impl From<&Interface> for Adapter {
             description: i.description.clone(),
             ip: i.ip,
             broadcast: i.broadcast(),
+            netmask: i.netmask(),
             mac: i.mac,
         }
     }
@@ -49,6 +60,8 @@ pub struct LinkConfig {
     /// Computer name sent to players (0x11).
     pub hostname: String,
     pub library: LibraryInfo,
+    /// Drive letters offered to the players over mountd (`/C/`, `/D/`, …).
+    pub drives: Vec<char>,
 }
 
 /// Everything the service reports.
@@ -57,6 +70,11 @@ pub enum LinkEvent {
     /// Now running on this adapter (`None` = no usable adapter, waiting).
     Adapter(Option<Adapter>),
     Presence(Event),
+    /// A portmapper/mountd request was answered.
+    Rpc {
+        from: Ipv4Addr,
+        kind: rpc::Kind,
+    },
 }
 
 enum Control {
@@ -123,13 +141,14 @@ pub fn choose_adapter(wanted: Option<&str>) -> Option<Adapter> {
 /// Start the presence; returns once the sockets are bound.
 pub fn start(cfg: LinkConfig) -> Result<LinkHandle, LinkError> {
     let sockets = [bind(PORT_ANNOUNCE)?, bind(PORT_BEAT)?, bind(PORT_STATUS)?];
+    let rpc_sockets = [bind(PORT_PORTMAP)?, bind(PORT_MOUNTD)?];
     let stop = Arc::new(AtomicBool::new(false));
     let (ctl_tx, ctl_rx) = channel();
     let (ev_tx, ev_rx) = channel();
     let flag = stop.clone();
     let thread = std::thread::Builder::new()
         .name("rbx-link".into())
-        .spawn(move || run(cfg, sockets, flag, ctl_rx, ev_tx))?;
+        .spawn(move || run(cfg, sockets, rpc_sockets, flag, ctl_rx, ev_tx))?;
     Ok(LinkHandle {
         stop,
         control: ctl_tx,
@@ -163,6 +182,7 @@ fn send(sockets: &[UdpSocket; 3], adapter: &Adapter, out: Vec<Out>) {
 fn run(
     cfg: LinkConfig,
     sockets: [UdpSocket; 3],
+    rpc_sockets: [UdpSocket; 2],
     stop: Arc<AtomicBool>,
     control: Receiver<Control>,
     events: Sender<LinkEvent>,
@@ -240,6 +260,7 @@ fn run(
                     }
                 }
             }
+            busy |= serve_rpc(&rpc_sockets, a, &cfg.drives, &events, &mut buf);
             let out = p.tick(now());
             send(&sockets, a, out);
             for e in p.take_events() {
@@ -250,7 +271,7 @@ fn run(
             }
         } else {
             // no adapter: drain the sockets so nothing piles up
-            for sock in &sockets {
+            for sock in sockets.iter().chain(&rpc_sockets) {
                 while sock.recv_from(&mut buf).is_ok() {}
             }
         }
@@ -261,4 +282,49 @@ fn run(
     if let (Some(p), Some(a)) = (presence.as_mut(), adapter.as_ref()) {
         send(&sockets, a, p.stop());
     }
+}
+
+/// Answer pending portmapper/mountd datagrams; true if there were any.
+fn serve_rpc(
+    sockets: &[UdpSocket; 2],
+    adapter: &Adapter,
+    drives: &[char],
+    events: &Sender<LinkEvent>,
+    buf: &mut [u8],
+) -> bool {
+    let exports = Exports {
+        drives: drives.to_vec(),
+        ip: adapter.ip,
+        netmask: adapter.netmask,
+    };
+    let mut busy = false;
+    for sock in sockets {
+        loop {
+            let (n, from) = match sock.recv_from(buf) {
+                Ok((n, SocketAddr::V4(from))) => (n, from),
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    debug!("rpc receive: {e}");
+                    break;
+                }
+            };
+            busy = true;
+            if !adapter.same_subnet(*from.ip()) {
+                debug!("rpc from {from} outside the link subnet ignored");
+                continue;
+            }
+            if let Some((answer, kind)) = rpc::answer(&exports, &buf[..n]) {
+                if let Err(e) = sock.send_to(&answer, from) {
+                    debug!("rpc answer to {from}: {e}");
+                }
+                trace!("rpc {from}: {kind:?}");
+                let _ = events.send(LinkEvent::Rpc {
+                    from: *from.ip(),
+                    kind,
+                });
+            }
+        }
+    }
+    busy
 }
