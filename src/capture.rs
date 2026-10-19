@@ -242,15 +242,15 @@ pub fn report(packets: &[Packet]) -> String {
         } else if s.data.starts_with(&dbserver::GREETING) {
             db_streams += 1;
             let _ = writeln!(r, "{head}\ndatabase connection (greeting)");
-            let (msgs, used, err) = dbserver::decode_stream(&s.data[5..]);
+            let (msgs, skips) = dbserver::decode_stream_resync(&s.data[5..]);
             for m in &msgs {
                 let _ = writeln!(r, "{}", describe(m));
             }
-            if let Some(e) = err {
-                let _ = writeln!(r, "!! decode error after {used} bytes: {e}");
+            if skips > 0 {
+                let _ = writeln!(r, "!! {skips} undecodable stretches skipped (gaps in the capture)");
             }
         } else {
-            let (msgs, _, _) = dbserver::decode_stream(&s.data);
+            let (msgs, _) = dbserver::decode_stream_resync(&s.data);
             if msgs.is_empty() {
                 let _ = writeln!(r, "{head}\nfirst bytes: {:02X?}", &s.data[..s.data.len().min(24)]);
             } else {

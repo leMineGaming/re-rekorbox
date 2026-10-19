@@ -395,3 +395,24 @@ pub fn decode_stream(buf: &[u8]) -> (Vec<Message>, usize, Option<DbError>) {
         }
     }
 }
+
+/// Like [`decode_stream`], but after an undecodable stretch (e.g. a gap in a capture) continue at the
+/// next message magic. Returns the messages and the number of skipped stretches.
+pub fn decode_stream_resync(buf: &[u8]) -> (Vec<Message>, usize) {
+    let magic = [TAG_U32, 0x87, 0x23, 0x49, 0xAE];
+    let (mut out, mut used, mut skips) = (Vec::new(), 0usize, 0usize);
+    while used < buf.len() {
+        let (msgs, n, err) = decode_stream(&buf[used..]);
+        out.extend(msgs);
+        used += n;
+        if err.is_none() {
+            break;
+        }
+        skips += 1;
+        match buf[used + 1..].windows(5).position(|w| w == magic) {
+            Some(i) => used += 1 + i,
+            None => break,
+        }
+    }
+    (out, skips)
+}
