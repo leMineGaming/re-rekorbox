@@ -976,7 +976,7 @@ Link-Mitschnitt.cmd`).
 | U30 | XDJ-RX3 im DJ-Link-Netz: tatsächliche Gerätenummer, Geräteart und gesendete Pakettypen | Mitschnitt mit `rbf djlink-listen` am Gerät |
 | U31 | DJ Link: Dauer des Alterungs-Zeitgebers je Gerät (vermutlich 10000 ms) und genaue Zahl der IdUse-Durchläufe | Mitschnitt |
 | U32 | Analyse: genaue Abbildung der ms-Datensätze auf die Tag-Werte – durch Kalibrierung angenähert (5j, Genauigkeit 8a), exakte Formeln der Spaltenbildner nicht nachgezeichnet | Dekompilat GH:0x141236eb0 ff. |
-| U33 | Link Export: Dateipfad/NFS offen. **Beobachtung am XDJ-RX3 (2026-10-17):** das Gerät erkennt den eigenen Teilnehmer (Nummer 17, Art 4) als „SOFTWARE CONTROL“, stellt aber keine Port-Abfrage; rekordbox enthält eine Geräte-Authentifizierung für die „DJ equipment linkage“ (`InnerLinkAPI::receiveAuthStatus`, Dialoge „Authenticate this device?“). Kopierschutz/Lizenz – wird nicht analysiert oder nachgebaut (§6) | – |
+| U33 | Link Export: Beobachtung am XDJ-RX3 (2026-10-17): eigener Teilnehmer mit Nummer 17 (Art 4, wie rekordbox) wird als „SOFTWARE CONTROL“ angezeigt, aber nie abgefragt. Wahrscheinliche Ursache (prolink F45, docs/link/PHASE0.md): Player fragen nur Geräte mit Nummer 1–4 ab. Eine Validierung im Link-Verkehr ist nicht belegt; Klärung durch Phase 1 und Mitschnitt. Kopierschutz/Lizenz wird nicht analysiert (§6) | Phase 1, Mitschnitt |
 | U2 | Aufbau `export.pdb` (Seiten, Tabellen, Zeilenformat) | Dekompilat nötig |
 | U3 | Exakte rekordbox.xml-Attributsemantik (Einheiten, Kodierung von Farben/Ratings/Keys) | Dekompilat oder eigener Export als Testdaten |
 | U4 | Rolle von `rbHttpServer.exe` / `edb_streamd.exe` | eigene Analyse jeder Binärdatei |
