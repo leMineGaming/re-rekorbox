@@ -11,6 +11,9 @@ pub enum LinkError {
     Io(#[from] std::io::Error),
     #[error("the link thread stopped")]
     Stopped,
+    /// A USB (Weg B, userspace NIC) operation failed.
+    #[error("usb: {0}")]
+    Usb(String),
 }
 
 /// A packet that could not be decoded.

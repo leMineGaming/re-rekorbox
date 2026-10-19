@@ -9,6 +9,7 @@
 //! * [`dbserver`] – database session (menus, metadata, analysis data), pure
 //! * [`server`] – port query (TCP 12523) and database connections
 //! * [`net`] – sockets, adapter choice, thread, events
+//! * [`usb`] – the USB layer (RTL8152 Ethernet-over-USB framing, MIDI SysEx, [`usb::EthernetLink`])
 
 pub mod catalog;
 pub mod dbserver;
@@ -20,5 +21,6 @@ pub mod packets;
 pub mod rpc;
 pub mod server;
 pub mod status;
+pub mod usb;
 
 pub use error::{LinkError, PacketError};

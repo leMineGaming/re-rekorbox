@@ -72,11 +72,20 @@ und jede Minute Audio-Last und Aussetzer nach `%APPDATA%\rekordbox-rs\logs\rbx-u
 
 ## Link Export (Vorabversion)
 
-`rekordbox-formats::dbserver` kodiert das Datenbank-Protokoll, mit dem DJ-Player die Bibliothek eines Rechners
-abfragen (SPEC §5k, belegt aus rekordbox: Feldtypen, Nachrichtenkopf, 134 Befehle, Argument-Layouts);
-`rbx-engine::linkexport` ist der Server dazu (in `rbx-ui` unter Einstellungen). `rbf linkdump <capture>` decodiert
-Mitschnitte (pcap/pcapng) von rekordbox ↔ Player-Verkehr; `packaging/windows/Link-Mitschnitt.cmd` erstellt sie mit
-dem Windows-Werkzeug pktmon. Die Audio-Übertragung (NFS) folgt nach einem solchen Mitschnitt (SPEC U33).
+Der Workspace-Crate **`rbx-link`** tritt gegenüber dem XDJ-RX3 so auf wie rekordbox im Link-Export: Präsenz im
+Pro-DJ-Link-Netz (Nummernvergabe, Keep-alive, Antworten auf Port 50000–50002), Portmapper/mountd, der
+**NFS-v2-Dateiserver** (Audiodateien ans Pult, UDP 2049) und der **dbserver** (Menüs, Metadaten, Wellenformen,
+ANLZ-Tags, Port-Abfrage TCP 12523) – siehe `docs/link/PHASE0–6.md`. `link-announce` ist der Live-Test,
+`link-sniff` hört mit. Dazu kommt die USB-Ebene (`rbx_link::usb`): RTL8152-Ethernet-über-USB-Framing,
+`EthernetLink`-Trait (Weg A/B) und das MIDI-SysEx-Keepalive (Protokoll §4/§11.5; Hardware-Anbindung hinter dem
+Feature `usb`).
+
+`rekordbox-formats::dbserver` kodiert das Datenbank-Protokoll (SPEC §5k, belegt aus rekordbox: Feldtypen,
+Nachrichtenkopf, 134 Befehle, Argument-Layouts); `rbx-engine::linkexport` ist ein früherer Server dazu (in
+`rbx-ui` unter Einstellungen). `rbf linkdump <capture>` decodiert Mitschnitte (pcap/pcapng) von rekordbox ↔
+Player-Verkehr. Windows-Hilfen (in `packaging/windows/`): `Link-Server.cmd` stellt die Bibliothek bereit
+(Firewall, dbserver, NFS), `Link-Mitschnitt.cmd` zeichnet geführt den rekordbox-Verkehr auf und
+`Link-Sniff.cmd` nimmt zusätzlich die USB-Seite (USBPcap) für die Szenarien des Protokolls §9 auf.
 
 ## CLI
 
@@ -148,7 +157,8 @@ Tempowechsel), 1794 mit Phrasen, keine gespeicherten Cues. Die 69 mitgelieferten
 - Cloud-/Account-Dienste und deren Protokolle.
 - Audio-Engine, DSP, UI (Eigenentwürfe statt Nachbau); ML-Modelle und Gewichte (Beat-/Cue-Erkennung,
   Stem-Separation) werden nicht verwendet – die Analyse nutzt eigene, öffentliche Verfahren.
-- NFS-Dateifreigabe für DJ-Link-Geräte (`PSvNFSd.exe`, `NFSDaemon.dll`) und die Mobilgeräte-/Track-Übertragung.
+- rekordbox' eigene NFS-Binaries (`PSvNFSd.exe`, `NFSDaemon.dll`) und die Mobilgeräte-/Track-Übertragung;
+  ein eigener, nur lesender NFS-v2-Server für den Link-Export ist dagegen in `rbx-link` umgesetzt (`docs/link/PHASE5.md`).
 - `export.pdb` (Geräte-Datenbank): Engine, Strings und Zeilen sind belegt, das Seitenformat noch nicht – dafür wird ein
   USB-/Ordner-Export als Testdatei benötigt (SPEC U23).
 

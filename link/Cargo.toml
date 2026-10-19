@@ -9,11 +9,17 @@ publish = false
 [lib]
 name = "rbx_link"
 
+[features]
+default = []
+# Weg B (userspace NIC, xdj-rx3-link-export-protokoll.md §4.3): claim the raw USB device with nusb.
+usb = ["dep:nusb"]
+
 [dependencies]
 rekordbox-formats = { path = ".." }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+nusb = { version = "0.2", optional = true }
 
 [[bin]]
 name = "link-sniff"
