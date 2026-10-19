@@ -1,7 +1,8 @@
 //! The network side: adapter choice (the DJ unit's USB adapter first), the three DJ Link UDP sockets
 //! plus portmapper and mountd ([`crate::rpc`]), a thread that drives [`Presence`], hot-plug and
-//! adapter changes. Nothing here blocks the caller; events come through a channel. RPC is answered
-//! only for devices in the link adapter's subnet.
+//! adapter changes, and the database server ([`crate::server`]). Nothing here blocks the caller;
+//! events come through a channel. RPC and TCP are answered only for devices in the link adapter's
+//! subnet.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,10 +14,12 @@ use std::time::{Duration, Instant};
 use rekordbox_formats::netif::{self, Interface};
 use tracing::{debug, info, trace, warn};
 
+use crate::catalog::Catalog;
 use crate::devices::{Config, Event, Out, Presence};
 use crate::error::LinkError;
 use crate::packets::{LibraryInfo, PORT_ANNOUNCE, PORT_BEAT, PORT_STATUS};
 use crate::rpc::{self, Exports, PORT_MOUNTD, PORT_PORTMAP};
+use crate::server::{DbServer, Shared};
 
 /// How often the adapter list is checked for hot-plug.
 pub const ADAPTER_CHECK: Duration = Duration::from_secs(2);
@@ -62,6 +65,9 @@ pub struct LinkConfig {
     pub library: LibraryInfo,
     /// Drive letters offered to the players over mountd (`/C/`, `/D/`, …).
     pub drives: Vec<char>,
+    /// The library offered over the database server; `None` = port query answers "not ready".
+    /// When set, its counts replace `library`.
+    pub catalog: Option<Arc<Catalog>>,
 }
 
 /// Everything the service reports.
@@ -74,6 +80,11 @@ pub enum LinkEvent {
     Rpc {
         from: Ipv4Addr,
         kind: rpc::Kind,
+    },
+    /// A database request (message type) on a connection.
+    Db {
+        from: SocketAddr,
+        kind: u16,
     },
 }
 
@@ -88,6 +99,8 @@ pub struct LinkHandle {
     control: Sender<Control>,
     events: Receiver<LinkEvent>,
     thread: Option<JoinHandle<()>>,
+    shared: Arc<Shared>,
+    db: Option<DbServer>,
 }
 
 impl LinkHandle {
@@ -98,6 +111,18 @@ impl LinkHandle {
 
     pub fn set_library(&self, lib: LibraryInfo) {
         let _ = self.control.send(Control::Library(lib));
+    }
+
+    /// Offer another library (e.g. after a rescan).
+    pub fn set_catalog(&self, c: Arc<Catalog>) {
+        let info = c.info();
+        self.shared.set_catalog(c);
+        self.set_library(info);
+    }
+
+    /// TCP port of the database server.
+    pub fn db_port(&self) -> Option<u16> {
+        self.db.as_ref().map(|d| d.db_port)
     }
 
     pub fn set_master_bpm(&self, bpm: Option<f64>) {
@@ -112,6 +137,9 @@ impl LinkHandle {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+        }
+        if let Some(d) = self.db.take() {
+            d.stop();
         }
     }
 }
@@ -139,21 +167,34 @@ pub fn choose_adapter(wanted: Option<&str>) -> Option<Adapter> {
 }
 
 /// Start the presence; returns once the sockets are bound.
-pub fn start(cfg: LinkConfig) -> Result<LinkHandle, LinkError> {
+pub fn start(mut cfg: LinkConfig) -> Result<LinkHandle, LinkError> {
     let sockets = [bind(PORT_ANNOUNCE)?, bind(PORT_BEAT)?, bind(PORT_STATUS)?];
     let rpc_sockets = [bind(PORT_PORTMAP)?, bind(PORT_MOUNTD)?];
+    let shared = Arc::new(Shared::default());
+    if let Some(c) = cfg.catalog.take() {
+        cfg.library = c.info();
+        shared.set_catalog(c);
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let (ctl_tx, ctl_rx) = channel();
     let (ev_tx, ev_rx) = channel();
+    let db = DbServer::start(
+        shared.clone(),
+        rekordbox_formats::dbserver::PORT_QUERY,
+        ev_tx.clone(),
+    )?;
     let flag = stop.clone();
+    let sh = shared.clone();
     let thread = std::thread::Builder::new()
         .name("rbx-link".into())
-        .spawn(move || run(cfg, sockets, rpc_sockets, flag, ctl_rx, ev_tx))?;
+        .spawn(move || run(cfg, sockets, rpc_sockets, flag, sh, ctl_rx, ev_tx))?;
     Ok(LinkHandle {
         stop,
         control: ctl_tx,
         events: ev_rx,
         thread: Some(thread),
+        shared,
+        db: Some(db),
     })
 }
 
@@ -184,6 +225,7 @@ fn run(
     sockets: [UdpSocket; 3],
     rpc_sockets: [UdpSocket; 2],
     stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     control: Receiver<Control>,
     events: Sender<LinkEvent>,
 ) {
@@ -221,9 +263,16 @@ fn run(
                     send(&sockets, a, p.stop());
                 }
                 match &found {
-                    Some(a) => info!("Pro DJ Link on {} ({}, {})", a.name, a.description, a.ip),
-                    None => warn!("no usable network adapter – waiting"),
+                    Some(a) => {
+                        info!("Pro DJ Link on {} ({}, {})", a.name, a.description, a.ip);
+                        shared.set_subnet(a.ip, a.netmask);
+                    }
+                    None => {
+                        warn!("no usable network adapter – waiting");
+                        shared.subnet.store(0, Ordering::Relaxed);
+                    }
                 }
+                shared.own.store(0, Ordering::Relaxed);
                 presence = found.as_ref().map(|a| {
                     let mut p = Presence::new(Config {
                         mac: a.mac,
@@ -264,6 +313,11 @@ fn run(
             let out = p.tick(now());
             send(&sockets, a, out);
             for e in p.take_events() {
+                match &e {
+                    Event::Claimed(n) => shared.own.store(*n, Ordering::Relaxed),
+                    Event::Conflict { .. } => shared.own.store(0, Ordering::Relaxed),
+                    _ => {}
+                }
                 if !matches!(e, Event::Status(_)) {
                     debug!("{e:?}");
                 }

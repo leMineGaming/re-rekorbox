@@ -3,20 +3,25 @@
 //!
 //! ```text
 //! link-announce [--seconds N] [--adapter NAME|IP] [--tracks N] [--playlists N] [--drives CD]
-//!               [--log FILE] [--probe-db]
+//!               [--music DIR] [--no-library] [--log FILE]
 //! ```
-//! There is no library server yet: the unit should list the computer under LINK and ask for its
-//! media (0x05), but browsing does not work before Phase 4.
+//! Offers the library (rekordbox's analyses and our own, matched against `--music DIR` or the Music
+//! folder) to the unit for browsing; `--no-library` announces without it. Loading tracks (NFS) is
+//! Phase 5.
 
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rbx_link::catalog::Catalog;
 use rbx_link::devices::Event;
 use rbx_link::net::{self, LinkConfig, LinkEvent};
 use rbx_link::packets::LibraryInfo;
+use rekordbox_formats::library::{default_anlz_root, default_music_root, Library};
 
 /// Prints and, with `--log`, writes the same line to the file.
 struct Out(Option<File>);
@@ -61,6 +66,18 @@ fn main() -> ExitCode {
             Err(e) => eprintln!("log {path}: {e}"),
         }
     }
+    let catalog = if args.iter().any(|a| a == "--no-library") {
+        None
+    } else {
+        let t = Instant::now();
+        let c = load_catalog(val("--music").map(PathBuf::from));
+        out.line(&format!(
+            "library: {} playable tracks ({:.1} s)",
+            c.len(),
+            t.elapsed().as_secs_f64()
+        ));
+        Some(Arc::new(c))
+    };
     let cfg = LinkConfig {
         adapter: val("--adapter"),
         hostname: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "rekordbox-rs".into()),
@@ -74,6 +91,7 @@ fn main() -> ExitCode {
             .filter(char::is_ascii_alphabetic)
             .map(|c| c.to_ascii_uppercase())
             .collect(),
+        catalog,
     };
     let link = match net::start(cfg) {
         Ok(l) => l,
@@ -85,30 +103,11 @@ fn main() -> ExitCode {
     out.line(&format!(
         "announcing for {seconds} s – on the unit: choose LINK / the source selection"
     ));
-    // diagnosis until Phase 4: who knocks on the dbserver port (nothing is answered)
-    if args.iter().any(|a| a == "--probe-db") {
-        match std::net::TcpListener::bind(("0.0.0.0", 12523)) {
-            Ok(l) => {
-                std::thread::spawn(move || {
-                    for c in l.incoming().flatten() {
-                        let mut buf = [0u8; 64];
-                        let _ = c.set_read_timeout(Some(Duration::from_secs(1)));
-                        let n = std::io::Read::read(&mut &c, &mut buf).unwrap_or(0);
-                        println!(
-                            "         tcp 12523 from {:?}: {:02x?}",
-                            c.peer_addr().ok(),
-                            &buf[..n]
-                        );
-                    }
-                });
-            }
-            Err(e) => out.line(&format!("tcp 12523: {e}")),
-        }
-    }
     let t = Instant::now();
     let mut requests: BTreeMap<(u8, u8), usize> = BTreeMap::new();
     let mut play: BTreeMap<u8, u32> = BTreeMap::new();
     let mut rpcs: BTreeMap<String, usize> = BTreeMap::new();
+    let mut db: BTreeMap<u16, usize> = BTreeMap::new();
     while t.elapsed().as_secs_f64() < seconds {
         for e in link.events() {
             let at = t.elapsed().as_secs_f64();
@@ -141,6 +140,14 @@ fn main() -> ExitCode {
                     if d.second_deck { " second deck" } else { "" }
                 ),
                 LinkEvent::Presence(e) => format!("{at:8.2} {e:?}"),
+                LinkEvent::Db { from, kind } => {
+                    let n = db.entry(kind).or_default();
+                    *n += 1;
+                    format!(
+                        "{at:8.2} db {from}: {kind:#06x} {}",
+                        rekordbox_formats::dbserver::kind::name(kind)
+                    )
+                }
                 LinkEvent::Rpc { from, kind } => {
                     let what = format!("{kind:?}");
                     let n = rpcs.entry(what.clone()).or_default();
@@ -164,10 +171,29 @@ fn main() -> ExitCode {
     for (what, n) in &rpcs {
         out.line(&format!("  rpc {what} × {n}"));
     }
+    for (kind, n) in &db {
+        out.line(&format!(
+            "  db {kind:#06x} {} × {n}",
+            rekordbox_formats::dbserver::kind::name(*kind)
+        ));
+    }
     if requests.keys().any(|(_, k)| *k == 0x05) {
         out.line("  media query 0x05 came – the unit asked for our library (answered with 0x06)");
     } else {
         out.line("  (no media query 0x05 – the unit did not ask for our library)");
     }
     ExitCode::SUCCESS
+}
+
+/// rekordbox's analyses plus our own (`%APPDATA%\rekordbox-rs\ANLZ`), matched against the music folder.
+fn load_catalog(music: Option<PathBuf>) -> Catalog {
+    let mut roots: Vec<PathBuf> = default_anlz_root().into_iter().collect();
+    if let Some(own) = std::env::var_os("APPDATA")
+        .map(|a| PathBuf::from(a).join("rekordbox-rs").join("ANLZ"))
+        .filter(|p| p.is_dir())
+    {
+        roots.push(own);
+    }
+    let music: Vec<PathBuf> = music.or_else(default_music_root).into_iter().collect();
+    Catalog::from_library(&Library::build_multi(&roots, &music))
 }
