@@ -62,6 +62,28 @@ C-Laufzeit (kein Visual-C++-Paket nötig), Icon, `LIESMICH.txt`, `Installieren.c
 aktuellen Benutzer ohne Adminrechte, mit Startmenü, Desktop-Verknüpfung und Eintrag unter „Apps“) und
 `Selbsttest.cmd`. Das Icon entsteht mit `python packaging/make_icon.py`.
 
+## Linux-Paket
+
+```bash
+packaging/build-linux.sh
+```
+
+führt die Tests aus und baut `dist/rekordbox-rs-<version>-linux-x86_64.tar.gz` mit allen Programmen,
+`README.md` und `README-LINUX.txt`. Benötigt werden ALSA sowie eine grafische Sitzung (X11 oder Wayland);
+zum Bauen unter Debian/Ubuntu: `libasound2-dev libgl1-mesa-dev libx11-dev libxkbcommon-dev libwayland-dev`.
+
+## Releases
+
+Die GitHub-Action [`.github/workflows/release.yml`](.github/workflows/release.yml) testet und baut beide
+Pakete und veröffentlicht sie als Release, sobald ein Tag `v<version>` gepusht wird. Die Version steht in
+`Cargo.toml`, `engine/Cargo.toml`, `ui/Cargo.toml` und `link/Cargo.toml`; alle müssen übereinstimmen und zum
+Tag passen. Für eine neue Version also die Version erhöhen, committen und taggen:
+
+```bash
+git tag -a v0.1.0 -m v0.1.0
+git push origin v0.1.0
+```
+
 `rbx-selftest` prüft automatisch, was sonst von Hand auszuprobieren wäre, ohne dass etwas zu hören ist:
 Audio-Qualität (offline gerenderte Bedienabläufe: Knackser, Tonhöhe, Sync-Drift, Echo-Timing, Pegel, Routing),
 Soundkarten (nur Stille: Puffer, Latenz, Aussetzer), Leistung, Dauerlauf mit zufälliger Bedienung, Bibliothek

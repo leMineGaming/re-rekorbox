@@ -1,0 +1,155 @@
+name: Release
+
+# Publishing a release:
+#   1. set the new version in Cargo.toml, engine/Cargo.toml, ui/Cargo.toml and link/Cargo.toml
+#   2. commit and push the version bump
+#   3. create and push the matching tag, e.g. `git tag -a v0.1.0 -m v0.1.0 && git push origin v0.1.0`
+#
+# The tag must be `v` + the workspace version. The workflow tests, builds the Linux and
+# Windows packages and attaches them to a GitHub release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  prepare:
+    name: Check version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag, SemVer and workspace versions
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' ui/Cargo.toml | head -n 1)"
+          [ -n "$version" ] || { echo "::error file=ui/Cargo.toml::No package version found"; exit 1; }
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error file=ui/Cargo.toml::Version '$version' is not SemVer (MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD])"
+            exit 1
+          fi
+
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Tag '$tag' does not match the workspace version 'v$version'. Bump the version, commit, then tag v$version."
+            exit 1
+          fi
+
+          for manifest in Cargo.toml engine/Cargo.toml ui/Cargo.toml link/Cargo.toml; do
+            other="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$manifest" | head -n 1)"
+            if [ "$other" != "$version" ]; then
+              echo "::error file=$manifest::Version '$other' does not match the workspace version '$version'"
+              exit 1
+            fi
+          done
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version $version matches tag $tag."
+
+  linux:
+    name: Linux x86_64
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-release
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            pkg-config
+
+      - name: Test
+        run: cargo test --workspace --release
+
+      - name: Build package
+        run: packaging/build-linux.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x64
+    needs: prepare
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+
+      # Runs the workspace tests and builds the zip with a statically linked C runtime.
+      - name: Build package
+        run: packaging/build-windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: [prepare, linux, windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: rekordbox-rs v${{ needs.prepare.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(needs.prepare.outputs.version, '-') }}
